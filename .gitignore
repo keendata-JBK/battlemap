@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.npm-cache/
+.npmrc
+AGENTS.md
+design/implementation-*.png
+design/qa-compare.html
+design/qa-comparison.png
+public/qa/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
