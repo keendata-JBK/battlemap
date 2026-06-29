@@ -3,7 +3,6 @@ import * as echarts from "echarts/core";
 import { BarChart, EffectScatterChart, FunnelChart, LineChart, PieChart } from "echarts/charts";
 import { GeoComponent, GridComponent, LegendComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
-import chinaGeoJson from "china-map-geojson/lib/china.js";
 import { CATEGORY_META } from "./data.js";
 
 echarts.use([
@@ -19,17 +18,6 @@ echarts.use([
   CanvasRenderer,
 ]);
 
-const CHINA_GEO_JSON = chinaGeoJson.default ?? chinaGeoJson;
-
-let mapRegistered = false;
-
-function ensureMap() {
-  if (!mapRegistered) {
-    echarts.registerMap("china-battlemap", CHINA_GEO_JSON);
-    mapRegistered = true;
-  }
-}
-
 export function EChart({ option, className = "", onEvents = {}, ariaLabel = "数据图表" }) {
   const hostRef = useRef(null);
   const chartRef = useRef(null);
@@ -38,10 +26,6 @@ export function EChart({ option, className = "", onEvents = {}, ariaLabel = "数
     if (!hostRef.current) return undefined;
     const chart = echarts.init(hostRef.current, undefined, { renderer: "canvas" });
     chartRef.current = chart;
-
-    Object.entries(onEvents).forEach(([eventName, handler]) => {
-      chart.on(eventName, handler);
-    });
 
     const observer = new ResizeObserver(() => chart.resize());
     observer.observe(hostRef.current);
@@ -54,14 +38,34 @@ export function EChart({ option, className = "", onEvents = {}, ariaLabel = "数
   }, []);
 
   useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return undefined;
+    Object.entries(onEvents).forEach(([eventName, handler]) => chart.on(eventName, handler));
+    return () => Object.entries(onEvents).forEach(([eventName, handler]) => chart.off(eventName, handler));
+  }, [onEvents]);
+
+  useEffect(() => {
     chartRef.current?.setOption(option, true);
   }, [option]);
 
   return <div ref={hostRef} className={className} role="img" aria-label={ariaLabel} />;
 }
 
-export function ChinaBattleMap({ projects, selectedProjectId, onSelectProject, onSelectProvince, viewMode = "全国" }) {
-  ensureMap();
+export function ChinaBattleMap({
+  projects,
+  selectedProjectId,
+  onSelectProject,
+  onDrill,
+  geoJson,
+  mapKey,
+  level = "country",
+}) {
+  const mapName = useMemo(() => {
+    if (!geoJson) return null;
+    const name = `battlemap-${mapKey}`;
+    echarts.registerMap(name, geoJson);
+    return name;
+  }, [geoJson, mapKey]);
 
   const option = useMemo(() => {
     const points = projects.map((project) => ({
@@ -82,6 +86,8 @@ export function ChinaBattleMap({ projects, selectedProjectId, onSelectProject, o
       },
     }));
 
+    if (!mapName) return {};
+
     return {
       animationDuration: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 0 : 450,
       backgroundColor: "transparent",
@@ -97,15 +103,18 @@ export function ChinaBattleMap({ projects, selectedProjectId, onSelectProject, o
             if (!project) return params.name;
             return `<strong>${project.name}</strong><br/>${project.city} · ${project.district}<br/>商机金额 ${project.amount.toLocaleString()} 万元`;
           }
-          return params.name ?? "";
+          const feature = geoJson.features.find((item) => item.properties?.name === params.name);
+          const canDrill = ["province", "city", "district"].includes(feature?.properties?.level);
+          return `${params.name ?? ""}${canDrill && feature?.properties?.level !== "district" ? "<br/><small>点击进入下一级</small>" : ""}`;
         },
       },
       geo: {
-        map: "china-battlemap",
+        map: mapName,
         roam: true,
-        zoom: viewMode === "全国" ? 1.13 : 3.05,
-        center: viewMode === "华东" ? [117.3, 30.7] : viewMode === "西南" ? [103.8, 28.6] : [108.5, 30.9],
-        scaleLimit: { min: 0.9, max: 5 },
+        zoom: 1,
+        layoutCenter: ["50%", "51%"],
+        layoutSize: level === "country" ? "94%" : "91%",
+        scaleLimit: { min: 0.72, max: 12 },
         selectedMode: "single",
         label: {
           show: true,
@@ -158,7 +167,7 @@ export function ChinaBattleMap({ projects, selectedProjectId, onSelectProject, o
         },
       ],
     };
-  }, [projects, selectedProjectId, viewMode]);
+  }, [geoJson, level, mapName, projects, selectedProjectId]);
 
   const events = useMemo(
     () => ({
@@ -168,19 +177,22 @@ export function ChinaBattleMap({ projects, selectedProjectId, onSelectProject, o
           return;
         }
         if (params.componentType === "geo" && params.name) {
-          onSelectProvince(params.name);
+          const feature = geoJson?.features.find((item) => item.properties?.name === params.name);
+          if (feature) onDrill(feature.properties);
         }
       },
     }),
-    [onSelectProject, onSelectProvince],
+    [geoJson, onDrill, onSelectProject],
   );
+
+  if (!geoJson || !mapName) return <div className="china-map" role="status" aria-label="地图边界加载中" />;
 
   return (
     <EChart
       option={option}
       onEvents={events}
       className="china-map"
-      ariaLabel="中国营销作战地图，可点击项目或省份下钻"
+      ariaLabel="中国营销作战地图，可点击省、市、区县逐级下钻"
     />
   );
 }

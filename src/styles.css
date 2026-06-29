@@ -40,6 +40,217 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+.auth-screen {
+  display: grid;
+  min-height: 100vh;
+  padding: 32px;
+  place-items: center;
+  background: #082a5f;
+}
+
+.auth-card {
+  width: min(430px, 100%);
+  padding: 34px 38px 28px;
+  border: 1px solid #dbe5f1;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(1, 18, 49, 0.34);
+}
+
+.auth-card > img {
+  display: block;
+  width: 176px;
+  height: 70px;
+  margin-bottom: 28px;
+  object-fit: contain;
+  object-position: left center;
+}
+
+.auth-card__title {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.auth-card__title > span {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  border-radius: 9px;
+  background: #e9f3ff;
+  color: #1263c9;
+  font-size: 23px;
+}
+
+.auth-card__title p {
+  margin: 0 0 4px;
+  color: #1677ff;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1.4px;
+}
+
+.auth-card__title h1 {
+  margin: 0;
+  color: #14213a;
+  font-size: 24px;
+}
+
+.auth-card__intro {
+  margin: 18px 0 24px;
+  color: #6d788b;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.auth-card form {
+  display: grid;
+  gap: 16px;
+}
+
+.auth-card form label > span {
+  display: block;
+  margin-bottom: 7px;
+  color: #445168;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.auth-card form label > div {
+  display: flex;
+  align-items: center;
+  height: 43px;
+  gap: 9px;
+  padding: 0 12px;
+  border: 1px solid #d8e1ec;
+  border-radius: 7px;
+  color: #7d8ba1;
+}
+
+.auth-card form label > div:focus-within {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.1);
+}
+
+.auth-card form input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  color: #172033;
+}
+
+.auth-card form > button,
+.auth-card--blocked > button,
+.auth-card__actions button {
+  height: 43px;
+  border: 0;
+  border-radius: 7px;
+  background: #1677ff;
+  color: #fff;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.auth-card form > button:disabled {
+  cursor: wait;
+}
+
+.auth-card footer {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid #edf1f6;
+  color: #8793a6;
+  font-size: 10px;
+  text-align: center;
+}
+
+.auth-error {
+  margin: -4px 0 0;
+  color: #d83b3b;
+  font-size: 12px;
+}
+
+.auth-card--loading,
+.auth-card--blocked {
+  display: grid;
+  justify-items: center;
+  text-align: center;
+}
+
+.auth-card--loading > img {
+  margin-bottom: 20px;
+}
+
+.auth-card--loading h1,
+.auth-card--blocked h1 {
+  margin: 16px 0 6px;
+  color: #172033;
+  font-size: 20px;
+}
+
+.auth-card--loading p,
+.auth-card--blocked p {
+  margin: 0 0 18px;
+  color: #718096;
+  line-height: 1.6;
+}
+
+.auth-card--blocked > .anticon {
+  color: #1677ff;
+  font-size: 38px;
+}
+
+.auth-spinner {
+  width: 31px;
+  height: 31px;
+  border: 3px solid #dcecff;
+  border-top-color: #1677ff;
+  border-radius: 50%;
+  animation: auth-spin 0.8s linear infinite;
+}
+
+@keyframes auth-spin {
+  to { transform: rotate(360deg); }
+}
+
+.auth-card__actions {
+  display: flex;
+  width: 100%;
+  justify-content: center;
+  gap: 10px;
+}
+
+.auth-card__actions button {
+  min-width: 116px;
+  padding: 0 18px;
+}
+
+.auth-card__actions button.is-secondary {
+  border: 1px solid #ccd7e5;
+  background: #fff;
+  color: #536077;
+}
+
+.demo-mode-banner {
+  position: fixed;
+  z-index: 120;
+  right: 16px;
+  bottom: 14px;
+  display: flex;
+  align-items: center;
+  height: 32px;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid #f4ca77;
+  border-radius: 6px;
+  background: #fff8e8;
+  box-shadow: 0 7px 20px rgba(15, 35, 70, 0.14);
+  color: #8a5d00;
+  font-size: 10px;
+}
+
 button,
 input,
 select,
@@ -824,6 +1035,30 @@ button:disabled {
   font-size: 11px;
 }
 
+.map-breadcrumb > button,
+.map-breadcrumb > span > button {
+  padding: 3px 0;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  color: #b9cee9;
+  cursor: pointer;
+  font-size: inherit;
+}
+
+.map-breadcrumb > button:hover,
+.map-breadcrumb > span > button:hover,
+.map-breadcrumb button.is-current {
+  border-bottom-color: #55b7ff;
+  color: #fff;
+}
+
+.map-breadcrumb > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .map-breadcrumb .anticon {
   color: #7393bd;
   font-size: 8px;
@@ -846,6 +1081,69 @@ button:disabled {
 .china-map {
   width: 100%;
   height: 100%;
+}
+
+.map-state {
+  position: absolute;
+  z-index: 12;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  min-width: 240px;
+  padding: 22px 26px;
+  place-items: center;
+  transform: translate(-50%, -50%);
+  border: 1px solid rgba(101, 174, 255, 0.35);
+  border-radius: 10px;
+  background: rgba(4, 27, 67, 0.92);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+  color: #fff;
+  text-align: center;
+}
+
+.map-state > .anticon {
+  margin-bottom: 11px;
+  color: #55b7ff;
+  font-size: 25px;
+}
+
+.map-state span {
+  margin-top: 6px;
+  color: #8fb1da;
+  font-size: 11px;
+}
+
+.map-state button {
+  height: 32px;
+  margin-top: 12px;
+  padding: 0 18px;
+  border: 1px solid #3d9dff;
+  border-radius: 5px;
+  background: #1677ff;
+  color: #fff;
+  cursor: pointer;
+}
+
+.map-state--error > .anticon {
+  color: #ff8b8b;
+}
+
+.map-drill-hint {
+  position: absolute;
+  z-index: 6;
+  top: 14px;
+  left: 18px;
+  display: flex;
+  align-items: center;
+  height: 29px;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid rgba(102, 178, 255, 0.28);
+  border-radius: 5px;
+  background: rgba(4, 30, 70, 0.78);
+  color: #a9c8ed;
+  font-size: 10px;
+  pointer-events: none;
 }
 
 .map-controls {
@@ -2479,6 +2777,33 @@ button:disabled {
 .form-grid select:focus {
   border-color: #6faeff;
   box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.08);
+}
+
+.field-with-action {
+  display: flex;
+  gap: 6px;
+}
+
+.field-with-action input {
+  min-width: 0;
+  flex: 1;
+}
+
+.field-with-action button {
+  flex: 0 0 auto;
+  padding: 0 10px;
+  border: 1px solid #9bc8fa;
+  border-radius: 5px;
+  background: #eef6ff;
+  color: #1263c9;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.field-message {
+  color: #16815f;
+  font-size: 9px;
+  font-weight: 500;
 }
 
 .detail-modal {
