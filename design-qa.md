@@ -5,11 +5,11 @@
 - Source of truth: `design/reference-c.png`
 - Implementation: React/Vite frontend at `/battlemap/`
 - Viewports checked: 1440×1024, 768×1024, 390×844
-- Core flows checked: map overview, East/Southwest drilldown, project detail, workbench filters and forms, BI charts, data import preview, alerts, role switching, and admin access control
+- Core flows checked: map overview, East/Southwest region switching, province → city → district drilldown, project detail, production login, customer/contact/project forms, CSV preflight, workbench filters, BI charts, alerts, and admin access control
 
 ## Comparison result
 
-The implementation preserves the selected C direction: white primary navigation and command panel, brand-blue analytical map, dense executive information hierarchy, real company logo, restrained borders, and white data/BI/admin surfaces. The national overview was retained as the first layer, with explicit East and Southwest drilldown controls to satisfy the product scope.
+The implementation preserves the selected C direction: white primary navigation and command panel, brand-blue analytical map, dense executive information hierarchy, real company logo, restrained borders, and white data/BI/admin surfaces. The national overview was retained as the first layer, with explicit East and Southwest controls and an administrative breadcrumb for province, city, and district navigation.
 
 ## Findings resolved
 
@@ -17,13 +17,16 @@ The implementation preserves the selected C direction: white primary navigation 
 2. **P2 · State consistency** — A selected East project could remain visible after switching to Southwest. Project detail now derives from the filtered result set and closes during region changes.
 3. **P2 · Accessibility** — Added accessible names to icon-only popover and history controls, verified all visible buttons have names, retained visible keyboard focus indicators, and added reduced-motion handling.
 4. **P2 · Responsive resilience** — Verified no document-level horizontal overflow at tablet and mobile widths. Navigation becomes a fixed bottom bar; maps, tables, toolbars, forms, and charts remain operable.
+5. **P1 · Administrative drilldown** — Replaced the visual-only regional zoom with real GeoJSON boundary switching. Browser regression confirmed `华东区域 → 浙江省 → 杭州市 → 临安区`, scope-aware project totals, and breadcrumb return.
+6. **P1 · Production data entry** — Added authenticated loading, customer/contact/project fields, six-digit administrative codes, coordinate lookup, CSV validation, and administrator-managed users. The production login state and automatic district positioning were visually checked.
 
 ## Validation
 
 - Production build passes.
 - Browser console contains no errors or warnings in tested flows.
 - Desktop, tablet, and mobile screenshots reviewed.
-- Source and implementation reviewed side by side in a single comparison canvas.
+- Source and the Hangzhou district-level implementation were reviewed side by side in a single comparison canvas.
 - Sales role shows only Zhang Wei-owned rows; sales access to system administration is denied.
+- Database migration parses successfully; unit tests cover map scope, boundary request, and drill path behavior.
 
 final result: passed

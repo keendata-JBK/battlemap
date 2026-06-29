@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AimOutlined,
   ApartmentOutlined,
@@ -21,6 +21,8 @@ import {
   FilterOutlined,
   FullscreenOutlined,
   InfoCircleOutlined,
+  LoadingOutlined,
+  LogoutOutlined,
   MenuOutlined,
   MoreOutlined,
   PieChartOutlined,
@@ -40,6 +42,8 @@ import {
   WarningFilled,
 } from "@ant-design/icons";
 import { ChinaBattleMap, EChart } from "./ECharts.jsx";
+import { useAuth } from "./auth/AuthProvider.jsx";
+import { AccountBlockedScreen, AppLoadingScreen, DataErrorScreen, LoginScreen } from "./components/AuthScreens.jsx";
 import {
   CATEGORY_META,
   INITIAL_ALERTS,
@@ -49,6 +53,24 @@ import {
   STAGES,
   USERS,
 } from "./data.js";
+import {
+  createRegionBoundary,
+  getBoundaryRequest,
+  getProjectAdcode,
+  loadBoundary,
+  nextDrillItem,
+  projectMatchesMapScope,
+} from "./services/mapService.js";
+import {
+  createBackendUser,
+  loadBackendData,
+  loadDirectory,
+  importBackendProjects,
+  saveBackendProject,
+  setBackendUserActive,
+  softDeleteBackendProjects,
+  updateBackendAlerts,
+} from "./services/backendRepository.js";
 import logo from "./assets/keendata-logo.png";
 
 const NAV_ITEMS = [
@@ -86,6 +108,13 @@ function usePersistentState(key, initialValue) {
 
 function formatMoney(value) {
   return new Intl.NumberFormat("zh-CN").format(Math.round(value));
+}
+
+function formatProjectLocation(project) {
+  const municipality = ["上海", "重庆"].includes(project.province);
+  return municipality
+    ? `${project.province}市${project.district}`
+    : `${project.province}省${project.city}市${project.district}`;
 }
 
 function getStage(stageKey) {
@@ -197,9 +226,9 @@ function Modal({ title, children, onClose, width = 620 }) {
   );
 }
 
-function Sidebar({ activePage, setActivePage, roleKey, setRoleKey, alertsCount, collapsed, setCollapsed }) {
+function Sidebar({ activePage, setActivePage, roleKey, setRoleKey, alertsCount, collapsed, setCollapsed, currentUser, productionMode, onSignOut }) {
   const [profileOpen, setProfileOpen] = useState(false);
-  const currentRole = ROLE_PRESETS[roleKey];
+  const currentRole = { ...ROLE_PRESETS[roleKey], user: currentUser?.display_name ?? ROLE_PRESETS[roleKey].user };
 
   return (
     <aside className={`sidebar ${collapsed ? "sidebar--collapsed" : ""}`}>
@@ -239,8 +268,13 @@ function Sidebar({ activePage, setActivePage, roleKey, setRoleKey, alertsCount, 
         </button>
         {profileOpen && (
           <div className="profile-menu">
-            <p>切换权限视角</p>
-            {Object.entries(ROLE_PRESETS).map(([key, preset]) => (
+            <p>{productionMode ? "当前登录账号" : "切换权限视角"}</p>
+            {productionMode ? (
+              <button type="button" onClick={onSignOut}>
+                <span><strong>退出登录</strong><small>{currentUser?.email}</small></span>
+                <LogoutOutlined />
+              </button>
+            ) : Object.entries(ROLE_PRESETS).map(([key, preset]) => (
               <button
                 type="button"
                 key={key}
@@ -401,7 +435,7 @@ function ProjectDrawer({ project, onClose, onOpenDetails }) {
             <b>{project.priority}</b>
           </div>
           <p>
-            <EnvironmentOutlined /> {project.province}省{project.city}市{project.district}
+            <EnvironmentOutlined /> {formatProjectLocation(project)}
           </p>
         </div>
         <IconButton label="关闭项目详情" onClick={onClose}>
@@ -462,7 +496,7 @@ function PipelineBar({ projects }) {
   );
 }
 
-function MapToolbar({ search, setSearch, regionMode, setRegionMode, layersOpen, setLayersOpen, filtersOpen, setFiltersOpen, alertsOpen, setAlertsOpen }) {
+function MapToolbar({ search, setSearch, regionMode, setRegionMode, layersOpen, setLayersOpen, filtersOpen, setFiltersOpen, alertsOpen, setAlertsOpen, currentUserName = "用户" }) {
   return (
     <div className="map-toolbar">
       <div className="segmented-control">
@@ -487,19 +521,23 @@ function MapToolbar({ search, setSearch, regionMode, setRegionMode, layersOpen, 
           <BellOutlined />
           <b>12</b>
         </button>
-        <span className="avatar avatar--small">张</span>
-        <strong>张伟</strong>
+        <span className="avatar avatar--small">{currentUserName.slice(0, 1)}</span>
+        <strong>{currentUserName}</strong>
         <DownOutlined />
       </div>
     </div>
   );
 }
 
-function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToProject, roleKey }) {
+function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToProject, roleKey, currentUserName }) {
   const [layers, setLayers] = useState(Object.fromEntries(Object.keys(CATEGORY_META).map((key) => [key, true])));
   const [search, setSearch] = useState("");
   const [regionMode, setRegionMode] = useState("全国");
-  const [selectedProvince, setSelectedProvince] = useState(null);
+  const [drillPath, setDrillPath] = useState([]);
+  const [geoJson, setGeoJson] = useState(null);
+  const [mapLoading, setMapLoading] = useState(true);
+  const [mapError, setMapError] = useState("");
+  const [mapReloadToken, setMapReloadToken] = useState(0);
   const [savedView, setSavedView] = useState(null);
   const [layersOpen, setLayersOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -508,16 +546,34 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
   const [healthFilter, setHealthFilter] = useState("全部健康度");
   const [fullScreen, setFullScreen] = useState(false);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    const request = getBoundaryRequest(drillPath);
+    setMapLoading(true);
+    setMapError("");
+    loadBoundary(request.adcode, { full: request.full, signal: controller.signal })
+      .then((boundary) => {
+        if (controller.signal.aborted) return;
+        setGeoJson(drillPath.length ? boundary : createRegionBoundary(boundary, regionMode));
+        setMapLoading(false);
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setMapError(error.message || "地图边界加载失败");
+        setMapLoading(false);
+      });
+    return () => controller.abort();
+  }, [drillPath, mapReloadToken, regionMode]);
+
   const filteredProjects = useMemo(() => {
     let rows = projects.filter((project) => layers[project.category]);
-    if (regionMode !== "全国") rows = rows.filter((project) => project.region === `${regionMode}区域`);
+    rows = rows.filter((project) => projectMatchesMapScope(project, regionMode, drillPath));
     if (search.trim()) {
       const keyword = search.trim().toLowerCase();
       rows = rows.filter((project) => [project.name, project.account, project.city, project.district].join(" ").toLowerCase().includes(keyword));
     }
     if (regionFilter !== "全部区域") rows = rows.filter((project) => project.region === regionFilter);
     if (healthFilter !== "全部健康度") rows = rows.filter((project) => project.health === healthFilter);
-    if (selectedProvince) rows = rows.filter((project) => project.province === selectedProvince || project.province.includes(selectedProvince));
     if (savedView) {
       const view = SAVED_VIEWS.find((item) => item.id === savedView);
       if (view?.filter.region) rows = rows.filter((project) => project.region === view.filter.region);
@@ -527,9 +583,28 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
       if (view?.filter.minAmount) rows = rows.filter((project) => project.amount >= view.filter.minAmount);
     }
     return rows;
-  }, [projects, layers, search, regionMode, regionFilter, healthFilter, selectedProvince, savedView]);
+  }, [projects, layers, search, regionMode, drillPath, regionFilter, healthFilter, savedView]);
 
   const selectedProject = filteredProjects.find((project) => project.id === selectedProjectId);
+  const currentMapLevel = drillPath.at(-1)?.level ?? (regionMode === "全国" ? "country" : "region");
+
+  const changeRegion = useCallback((mode) => {
+    setRegionMode(mode);
+    setDrillPath([]);
+    onSelectProject(null);
+  }, [onSelectProject]);
+
+  const drillInto = useCallback((properties) => {
+    const next = nextDrillItem(properties);
+    if (!next || drillPath.at(-1)?.level === "district") return;
+    setDrillPath((current) => [...current, next]);
+    onSelectProject(null);
+  }, [drillPath, onSelectProject]);
+
+  const goToCrumb = useCallback((index) => {
+    setDrillPath((current) => current.slice(0, index + 1));
+    onSelectProject(null);
+  }, [onSelectProject]);
 
   return (
     <div className={`map-page ${fullScreen ? "map-page--fullscreen" : ""}`}>
@@ -548,17 +623,27 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
           search={search}
           setSearch={setSearch}
           regionMode={regionMode}
-          setRegionMode={(mode) => { setRegionMode(mode); setSelectedProvince(null); onSelectProject(null); }}
+          setRegionMode={changeRegion}
           layersOpen={layersOpen}
           setLayersOpen={setLayersOpen}
           filtersOpen={filtersOpen}
           setFiltersOpen={setFiltersOpen}
           alertsOpen={alertsOpen}
           setAlertsOpen={setAlertsOpen}
+          currentUserName={currentUserName}
         />
         <div className="map-breadcrumb">
-          <span>中国</span><RightOutlined /><span>{regionMode === "全国" ? "全国" : `${regionMode}区域`}</span>
-          {selectedProvince && <><RightOutlined /><strong>{selectedProvince}</strong></>}
+          <button type="button" onClick={() => changeRegion("全国")}>中国</button>
+          <RightOutlined />
+          <button type="button" className={!drillPath.length ? "is-current" : ""} onClick={() => { setDrillPath([]); onSelectProject(null); }}>
+            {regionMode === "全国" ? "全国" : `${regionMode}区域`}
+          </button>
+          {drillPath.map((item, index) => (
+            <span key={item.adcode}>
+              <RightOutlined />
+              <button type="button" className={index === drillPath.length - 1 ? "is-current" : ""} onClick={() => goToCrumb(index)}>{item.name}</button>
+            </span>
+          ))}
           <em>{ROLE_PRESETS[roleKey].scope}</em>
         </div>
         <div className="map-canvas">
@@ -566,12 +651,19 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
             projects={filteredProjects}
             selectedProjectId={selectedProjectId}
             onSelectProject={onSelectProject}
-            onSelectProvince={(province) => setSelectedProvince(selectedProvince === province ? null : province)}
-            viewMode={regionMode}
+            onDrill={drillInto}
+            geoJson={geoJson}
+            mapKey={`${regionMode}-${drillPath.map((item) => item.adcode).join("-") || "root"}`}
+            level={currentMapLevel}
           />
+          {mapLoading && <div className="map-state"><LoadingOutlined spin /><strong>正在加载行政区边界</strong><span>支持省、市、区县逐级下钻</span></div>}
+          {mapError && <div className="map-state map-state--error"><InfoCircleOutlined /><strong>{mapError}</strong><button type="button" onClick={() => setMapReloadToken((value) => value + 1)}>重新加载</button></div>}
+          {!mapLoading && !mapError && currentMapLevel !== "district" && (
+            <div className="map-drill-hint"><AimOutlined /> 点击地图进入下一级</div>
+          )}
           <div className="map-controls">
             <IconButton label="全屏" onClick={() => setFullScreen((value) => !value)}><FullscreenOutlined /></IconButton>
-            <IconButton label="定位到当前区域" onClick={() => setSelectedProvince(null)}><AimOutlined /></IconButton>
+            <IconButton label={drillPath.length ? "返回上一级" : "定位到当前区域"} onClick={() => { if (drillPath.length) setDrillPath((current) => current.slice(0, -1)); else setMapReloadToken((value) => value + 1); onSelectProject(null); }}><AimOutlined /></IconButton>
           </div>
           <div className="map-legend">
             <strong>项目价值</strong>
@@ -625,19 +717,32 @@ function PageHeader({ eyebrow, title, description, actions }) {
   );
 }
 
-function ProjectForm({ initialProject, onSubmit, onCancel }) {
-  const [form, setForm] = useState(() => initialProject ?? {
+function ProjectForm({ initialProject, onSubmit, onCancel, users = USERS, saving = false }) {
+  const salesUsers = users.filter((user) => user.roleKey === "sales" || user.role === "销售" || user.role === "销售经理");
+  const ownerUsers = salesUsers.length ? salesUsers : users;
+  const defaultOwner = ownerUsers[0]?.name ?? "";
+  const defaultPresales = users.find((user) => user.roleKey === "presales" || user.role === "售前")?.name ?? "";
+  const [form, setForm] = useState(() => initialProject ? {
+    ...initialProject,
+    adcode: getProjectAdcode(initialProject),
+    coordinates: initialProject.coordinates ?? [120.19, 30.19],
+  } : {
     name: "",
     account: "",
+    contactName: "",
+    contactMobile: "",
+    contactEmail: "",
     category: "government",
     region: "华东区域",
     province: "浙江",
     city: "杭州",
     district: "滨江区",
+    adcode: "330108",
+    coordinates: [120.19, 30.19],
     amount: 1000,
     stage: "lead",
-    owner: "张伟",
-    presales: "陈晨",
+    owner: defaultOwner,
+    presales: defaultPresales,
     health: "green",
     priority: "P2",
     nextAction: "首次拜访",
@@ -646,22 +751,51 @@ function ProjectForm({ initialProject, onSubmit, onCancel }) {
     source: "手工录入",
     risk: "暂无重大风险",
   });
+  const [locating, setLocating] = useState(false);
+  const [locationMessage, setLocationMessage] = useState("");
 
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const locateByAdcode = async () => {
+    if (!/^\d{6}$/.test(form.adcode || "")) {
+      setLocationMessage("请输入六位行政区划代码");
+      return;
+    }
+    setLocating(true);
+    setLocationMessage("");
+    try {
+      const boundary = await loadBoundary(form.adcode, { full: false });
+      const properties = boundary.features[0]?.properties;
+      const center = properties?.centroid ?? properties?.center;
+      if (!center) throw new Error("该行政区暂无中心点");
+      update("coordinates", center);
+      setLocationMessage(`已定位：${properties.name}`);
+    } catch (error) {
+      setLocationMessage(error.message || "定位失败");
+    } finally {
+      setLocating(false);
+    }
+  };
 
   return (
     <form className="project-form" onSubmit={(event) => { event.preventDefault(); onSubmit(form); }}>
       <div className="form-grid">
         <label className="span-2">项目名称<input required value={form.name} onChange={(event) => update("name", event.target.value)} placeholder="请输入项目名称" /></label>
         <label className="span-2">客户/资源主体<input required value={form.account} onChange={(event) => update("account", event.target.value)} placeholder="请输入客户名称" /></label>
+        <label>关键联系人<input value={form.contactName ?? ""} onChange={(event) => update("contactName", event.target.value)} placeholder="可选" /></label>
+        <label>联系人手机号<input type="tel" value={form.contactMobile ?? ""} onChange={(event) => update("contactMobile", event.target.value)} placeholder="机密数据" /></label>
+        <label className="span-2">联系人邮箱<input type="email" value={form.contactEmail ?? ""} onChange={(event) => update("contactEmail", event.target.value)} placeholder="机密数据" /></label>
         <label>项目类型<select value={form.category} onChange={(event) => update("category", event.target.value)}>{Object.entries(CATEGORY_META).map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}</select></label>
         <label>销售阶段<select value={form.stage} onChange={(event) => update("stage", event.target.value)}>{STAGES.map((stage) => <option key={stage.key} value={stage.key}>{stage.label}</option>)}</select></label>
         <label>经营区域<select value={form.region} onChange={(event) => update("region", event.target.value)}><option>华东区域</option><option>西南区域</option></select></label>
         <label>省份<input value={form.province} onChange={(event) => update("province", event.target.value)} /></label>
         <label>城市<input value={form.city} onChange={(event) => update("city", event.target.value)} /></label>
         <label>区县<input value={form.district} onChange={(event) => update("district", event.target.value)} /></label>
+        <label>行政区划代码<div className="field-with-action"><input required inputMode="numeric" pattern="[0-9]{6}" maxLength="6" value={form.adcode} onChange={(event) => update("adcode", event.target.value.replace(/\D/g, ""))} /><button type="button" onClick={locateByAdcode} disabled={locating}>{locating ? "定位中" : "自动定位"}</button></div>{locationMessage && <small className="field-message">{locationMessage}</small>}</label>
         <label>商机金额（万元）<input type="number" min="0" value={form.amount} onChange={(event) => update("amount", Number(event.target.value))} /></label>
-        <label>负责人<select value={form.owner} onChange={(event) => update("owner", event.target.value)}>{USERS.filter((user) => user.role === "销售" || user.role === "销售经理").map((user) => <option key={user.id}>{user.name}</option>)}</select></label>
+        <label>经度<input required type="number" step="0.000001" min="73" max="136" value={form.coordinates[0]} onChange={(event) => update("coordinates", [Number(event.target.value), form.coordinates[1]])} /></label>
+        <label>纬度<input required type="number" step="0.000001" min="3" max="54" value={form.coordinates[1]} onChange={(event) => update("coordinates", [form.coordinates[0], Number(event.target.value)])} /></label>
+        <label>负责人<select required value={form.owner} onChange={(event) => update("owner", event.target.value)}>{ownerUsers.map((user) => <option key={user.id}>{user.name}</option>)}</select></label>
+        <label>售前负责人<select value={form.presales} onChange={(event) => update("presales", event.target.value)}><option value="">未分配</option>{users.filter((user) => user.roleKey === "presales" || user.role === "售前").map((user) => <option key={user.id}>{user.name}</option>)}</select></label>
         <label>健康度<select value={form.health} onChange={(event) => update("health", event.target.value)}><option value="green">正常</option><option value="yellow">关注</option><option value="red">高风险</option><option value="gray">暂停</option></select></label>
         <label>优先级<select value={form.priority} onChange={(event) => update("priority", event.target.value)}><option>P0</option><option>P1</option><option>P2</option><option>P3</option></select></label>
         <label className="span-2">下一步动作<input value={form.nextAction} onChange={(event) => update("nextAction", event.target.value)} /></label>
@@ -670,7 +804,7 @@ function ProjectForm({ initialProject, onSubmit, onCancel }) {
       </div>
       <footer className="modal__footer">
         <GhostButton onClick={onCancel}>取消</GhostButton>
-        <PrimaryButton type="submit"><SaveOutlined /> 保存项目</PrimaryButton>
+        <PrimaryButton type="submit" disabled={saving}>{saving ? <><LoadingOutlined spin /> 正在保存</> : <><SaveOutlined /> 保存项目</>}</PrimaryButton>
       </footer>
     </form>
   );
@@ -685,7 +819,7 @@ function DetailModal({ project, onClose, onEdit }) {
         <section className="detail-hero">
           <i style={{ "--category-color": category.color }}>{category.short}</i>
           <div>
-            <span>{project.id} · {category.label}</span>
+            <span>{project.code ?? project.id} · {category.label}</span>
             <h3>{project.name}</h3>
             <p>{project.account}</p>
           </div>
@@ -745,7 +879,7 @@ function ProjectTable({ projects, selectedIds, setSelectedIds, onView, onEdit, o
           {projects.map((project) => (
             <tr key={project.id}>
               <td><input type="checkbox" checked={selectedIds.includes(project.id)} onChange={() => setSelectedIds((current) => current.includes(project.id) ? current.filter((id) => id !== project.id) : [...current, project.id])} aria-label={`选择${project.name}`} /></td>
-              <td><button className="table-title" type="button" onClick={() => onView(project)}><strong>{project.name}</strong><small>{project.id} · {project.account}</small></button></td>
+              <td><button className="table-title" type="button" onClick={() => onView(project)}><strong>{project.name}</strong><small>{project.code ?? project.id} · {project.account}</small></button></td>
               <td><span className="category-badge" style={{ "--category-color": CATEGORY_META[project.category].color }}>{CATEGORY_META[project.category].label}</span></td>
               <td>{project.region}<small className="cell-subtext">{project.city} · {project.district}</small></td>
               <td>{project.owner}<small className="cell-subtext">售前：{project.presales}</small></td>
@@ -862,17 +996,63 @@ function AnalysisPage({ projects }) {
   );
 }
 
+function parseCsvLine(line) {
+  const cells = [];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === '"' && line[index + 1] === '"') {
+      value += '"';
+      index += 1;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if (char === "," && !quoted) {
+      cells.push(value.trim());
+      value = "";
+    } else {
+      value += char;
+    }
+  }
+  cells.push(value.trim());
+  return cells;
+}
+
+function parseImportCsv(content) {
+  const lines = String(content).replace(/^\ufeff/, "").split(/\r?\n/).filter((line) => line.trim());
+  if (lines.length < 2) return [];
+  const headers = parseCsvLine(lines[0]);
+  const categoryMap = Object.fromEntries(Object.entries(CATEGORY_META).map(([key, meta]) => [meta.label, key]));
+  const stageMap = Object.fromEntries(STAGES.map((stage) => [stage.label, stage.key]));
+  return lines.slice(1, 10001).map((line, index) => {
+    const values = parseCsvLine(line);
+    const source = Object.fromEntries(headers.map((header, headerIndex) => [header, values[headerIndex] ?? ""]));
+    const data = {
+      name: source["项目名称"], account: source["客户主体"], contactName: source["关键联系人"] || "", contactMobile: source["联系人手机号"] || "", contactEmail: source["联系人邮箱"] || "", category: categoryMap[source["项目类型"]] ?? source["项目类型"] ?? "government",
+      region: source["经营区域"] || "华东区域", province: source["省份"], city: source["城市"], district: source["区县"], adcode: source["行政区划代码"],
+      coordinates: [Number(source["经度"]), Number(source["纬度"])], amount: Number(source["金额（万元）"] || 0), owner: source["负责人"], presales: source["售前负责人"] || "",
+      stage: stageMap[source["销售阶段"]] ?? source["销售阶段"] ?? "lead", health: "green", priority: source["优先级"] || "P2",
+      nextAction: source["下一步动作"] || "首次跟进", nextActionDate: source["计划日期"] || new Date().toISOString().slice(0, 10), expectedClose: source["预计成交日期"] || "",
+      source: "批量导入", risk: "暂无重大风险",
+    };
+    const missing = ["name", "account", "province", "city", "district", "adcode", "owner"].filter((key) => !data[key]);
+    if (!/^\d{6}$/.test(data.adcode || "")) missing.push("行政区划代码格式");
+    if (!Number.isFinite(data.coordinates[0]) || !Number.isFinite(data.coordinates[1])) missing.push("地图坐标");
+    return { row: index + 2, data, status: missing.length ? "需修正" : "通过", error: missing.join("、") };
+  });
+}
+
 function ImportModal({ onClose, onImport }) {
   const [file, setFile] = useState(null);
   const [step, setStep] = useState("upload");
   const [preview, setPreview] = useState([]);
+  const [submitting, setSubmitting] = useState(false);
 
   const inspect = () => {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      const lines = String(reader.result).split(/\r?\n/).filter(Boolean).slice(1, 6);
-      setPreview(lines.map((line, index) => ({ row: index + 2, value: line, status: line.split(",").length >= 6 ? "通过" : "字段不足" })));
+      setPreview(parseImportCsv(reader.result));
       setStep("preview");
     };
     reader.readAsText(file);
@@ -882,24 +1062,25 @@ function ImportModal({ onClose, onImport }) {
     <Modal title="批量导入项目数据" onClose={onClose} width={700}>
       <div className="import-modal">
         <div className="import-steps"><span className="is-active">1 上传文件</span><b /><span className={step === "preview" ? "is-active" : ""}>2 预检确认</span><b /><span>3 导入结果</span></div>
-        {step === "upload" ? <><label className="dropzone"><CloudUploadOutlined /><strong>上传 CSV 数据文件</strong><span>单次建议不超过 10,000 行，系统将执行字段、行政区和重复项校验</span><input type="file" accept=".csv,text/csv" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><em>{file ? file.name : "选择文件"}</em></label><div className="import-tips"><InfoCircleOutlined /><span><strong>导入前检查</strong><small>项目名称、客户主体、项目类型、区域、省、市、区县、金额和负责人为推荐字段。</small></span></div></> : <div className="import-preview"><header><strong>预检结果</strong><span>{preview.filter((row) => row.status === "通过").length} 行通过，{preview.filter((row) => row.status !== "通过").length} 行需修正</span></header>{preview.map((row) => <div key={row.row}><b>第 {row.row} 行</b><span>{row.value}</span><em className={row.status === "通过" ? "success-text" : "danger-text"}>{row.status}</em></div>)}</div>}
+        {step === "upload" ? <><label className="dropzone"><CloudUploadOutlined /><strong>上传 CSV 数据文件</strong><span>单次最多 10,000 行，系统将校验必填字段、行政区划代码和地图坐标</span><input type="file" accept=".csv,text/csv" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><em>{file ? file.name : "选择文件"}</em></label><div className="import-tips"><InfoCircleOutlined /><span><strong>导入前检查</strong><small>请使用系统模板，并填写六位行政区划代码、经度、纬度和负责人。</small></span></div></> : <div className="import-preview"><header><strong>预检结果</strong><span>{preview.filter((row) => row.status === "通过").length} 行通过，{preview.filter((row) => row.status !== "通过").length} 行需修正</span></header>{preview.slice(0, 50).map((row) => <div key={row.row}><b>第 {row.row} 行</b><span>{row.data.name || "未填写项目名称"} · {row.data.account || "未填写客户"}{row.error ? `（${row.error}）` : ""}</span><em className={row.status === "通过" ? "success-text" : "danger-text"}>{row.status}</em></div>)}</div>}
       </div>
       <footer className="modal__footer">
         <GhostButton onClick={onClose}>取消</GhostButton>
-        {step === "upload" ? <PrimaryButton disabled={!file} onClick={inspect}><FileExcelOutlined /> 开始预检</PrimaryButton> : <PrimaryButton disabled={preview.some((row) => row.status !== "通过")} onClick={() => onImport(preview.length)}><UploadOutlined /> 确认导入</PrimaryButton>}
+        {step === "upload" ? <PrimaryButton disabled={!file} onClick={inspect}><FileExcelOutlined /> 开始预检</PrimaryButton> : <PrimaryButton disabled={!preview.length || preview.some((row) => row.status !== "通过") || submitting} onClick={async () => { setSubmitting(true); await onImport(preview.map((row) => row.data)); setSubmitting(false); }}>{submitting ? <><LoadingOutlined spin /> 正在导入</> : <><UploadOutlined /> 确认导入</>}</PrimaryButton>}
       </footer>
     </Modal>
   );
 }
 
 function ManagementPage({ projects, onCreate, onImportOpen, onToast }) {
+  const projectCount = Math.max(projects.length, 1);
   const quality = {
-    region: Math.round((projects.filter((project) => project.district).length / projects.length) * 100),
-    owner: Math.round((projects.filter((project) => project.owner).length / projects.length) * 100),
-    next: Math.round((projects.filter((project) => project.nextAction).length / projects.length) * 100),
-    contact: 86,
+    region: Math.round((projects.filter((project) => project.district).length / projectCount) * 100),
+    owner: Math.round((projects.filter((project) => project.owner).length / projectCount) * 100),
+    next: Math.round((projects.filter((project) => project.nextAction).length / projectCount) * 100),
+    contact: projects.length ? 86 : 0,
   };
-  const downloadTemplate = () => exportCsv("营销作战地图_导入模板.csv", [{ name: "示例项目", account: "示例客户", category: "政府资源", region: "华东区域", province: "浙江", city: "杭州", district: "滨江区", amount: 1000, owner: "张伟" }], [{ key: "name", label: "项目名称" }, { key: "account", label: "客户主体" }, { key: "category", label: "项目类型" }, { key: "region", label: "经营区域" }, { key: "province", label: "省份" }, { key: "city", label: "城市" }, { key: "district", label: "区县" }, { key: "amount", label: "金额（万元）" }, { key: "owner", label: "负责人" }]);
+  const downloadTemplate = () => exportCsv("营销作战地图_导入模板.csv", [{ name: "示例项目", account: "示例客户", contactName: "示例联系人", contactMobile: "", contactEmail: "", category: "政府资源", region: "华东区域", province: "浙江", city: "杭州", district: "滨江区", adcode: "330108", longitude: 120.19, latitude: 30.19, amount: 1000, owner: "张伟", presales: "陈晨", stage: "线索", priority: "P2", nextAction: "首次拜访", nextActionDate: "2026-07-05", expectedClose: "2026-12-31" }], [{ key: "name", label: "项目名称" }, { key: "account", label: "客户主体" }, { key: "contactName", label: "关键联系人" }, { key: "contactMobile", label: "联系人手机号" }, { key: "contactEmail", label: "联系人邮箱" }, { key: "category", label: "项目类型" }, { key: "region", label: "经营区域" }, { key: "province", label: "省份" }, { key: "city", label: "城市" }, { key: "district", label: "区县" }, { key: "adcode", label: "行政区划代码" }, { key: "longitude", label: "经度" }, { key: "latitude", label: "纬度" }, { key: "amount", label: "金额（万元）" }, { key: "owner", label: "负责人" }, { key: "presales", label: "售前负责人" }, { key: "stage", label: "销售阶段" }, { key: "priority", label: "优先级" }, { key: "nextAction", label: "下一步动作" }, { key: "nextActionDate", label: "计划日期" }, { key: "expectedClose", label: "预计成交日期" }]);
   const sources = [{ name: "手工录入", count: projects.filter((p) => p.source === "手工录入").length, status: "正常", updated: "刚刚" }, { name: "历史 Excel 台账", count: 138, status: "已同步", updated: "今天 10:20" }, { name: "CRM 接口", count: 286, status: "正常", updated: "5 分钟前" }, { name: "伙伴项目清单", count: 42, status: "待复核", updated: "昨天 18:30" }];
   const history = [{ file: "华东大区项目清单_0628.csv", user: "刘洋", rows: 128, success: 124, failed: 4, time: "06-28 18:30" }, { file: "西南区客户资源补充.csv", user: "李娜", rows: 56, success: 56, failed: 0, time: "06-27 16:10" }, { file: "实施伙伴能力表.csv", user: "王磊", rows: 31, success: 29, failed: 2, time: "06-26 11:40" }];
   return (
@@ -934,30 +1115,76 @@ function AlertsPage({ alerts, setAlerts, projects, onViewProject }) {
   );
 }
 
-function SystemPage({ roleKey, onToast }) {
+function UserInviteForm({ onSubmit, onCancel, saving }) {
+  const [form, setForm] = useState({ displayName: "", email: "", role: "sales" });
+  return (
+    <form className="project-form" onSubmit={(event) => { event.preventDefault(); onSubmit(form); }}>
+      <div className="form-grid">
+        <label className="span-2">姓名<input required value={form.displayName} onChange={(event) => setForm((current) => ({ ...current, displayName: event.target.value }))} /></label>
+        <label className="span-2">企业邮箱<input required type="email" value={form.email} onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))} /></label>
+        <label className="span-2">角色<select value={form.role} onChange={(event) => setForm((current) => ({ ...current, role: event.target.value }))}><option value="sales">销售</option><option value="presales">售前</option><option value="admin">管理员</option></select></label>
+      </div>
+      <footer className="modal__footer"><GhostButton onClick={onCancel}>取消</GhostButton><PrimaryButton type="submit" disabled={saving}>{saving ? <><LoadingOutlined spin /> 正在发送</> : <><UserOutlined /> 发送邀请</>}</PrimaryButton></footer>
+    </form>
+  );
+}
+
+function SystemPage({ roleKey, onToast, initialUsers = USERS, productionMode, onInviteUser, onToggleUser }) {
   const [tab, setTab] = useState("users");
-  const [users, setUsers] = useState(USERS);
+  const [users, setUsers] = useState(initialUsers);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteSaving, setInviteSaving] = useState(false);
   const [pipeline, setPipeline] = useState(STAGES.map((stage, index) => ({ ...stage, sla: [3, 7, 14, 10, 7, null][index] })));
   const [rules, setRules] = useState([{ name: "任务逾期", type: "TASK_OVERDUE", severity: "红色", enabled: true }, { name: "阶段停滞", type: "STAGE_STAGNANT", severity: "黄色", enabled: true }, { name: "预计成交日已过", type: "CLOSE_DATE_PASSED", severity: "红色", enabled: true }, { name: "缺少下一步动作", type: "NO_NEXT_ACTION", severity: "黄色", enabled: true }]);
+  useEffect(() => setUsers(initialUsers), [initialUsers]);
+  const inviteUser = async (form) => {
+    setInviteSaving(true);
+    try {
+      await onInviteUser(form);
+      setInviteOpen(false);
+      onToast("用户邀请已发送");
+    } catch (error) {
+      onToast(error.message || "用户邀请失败", "error");
+    } finally {
+      setInviteSaving(false);
+    }
+  };
+  const toggleUser = async (user) => {
+    const active = user.status !== "启用";
+    try {
+      await onToggleUser(user.id, active);
+      setUsers((current) => current.map((item) => item.id === user.id ? { ...item, status: active ? "启用" : "停用" } : item));
+      onToast(active ? "用户已启用" : "用户已停用");
+    } catch (error) {
+      onToast(error.message || "用户状态更新失败", "error");
+    }
+  };
   const tabs = [{ key: "users", label: "用户与团队", icon: TeamOutlined }, { key: "permissions", label: "角色权限", icon: SafetyCertificateOutlined }, { key: "pipeline", label: "销售流程", icon: ProjectOutlined }, { key: "rules", label: "提醒规则", icon: BellOutlined }];
   if (roleKey !== "admin") return <div className="standard-page"><div className="permission-denied"><SafetyCertificateOutlined /><h1>仅管理员可访问系统管理</h1><p>当前为 {ROLE_PRESETS[roleKey].label}，请切换管理员视角后重试。</p></div></div>;
   return (
     <div className="standard-page system-page">
       <PageHeader eyebrow="SYSTEM ADMINISTRATION" title="系统管理" description="管理用户、权限、流程、规则和数据字典" actions={<PrimaryButton onClick={() => onToast("系统配置已保存")}><SaveOutlined /> 保存配置</PrimaryButton>} />
       <div className="system-tabs">{tabs.map((item) => { const Icon = item.icon; return <button key={item.key} type="button" className={tab === item.key ? "is-active" : ""} onClick={() => setTab(item.key)}><Icon />{item.label}</button>; })}</div>
-      {tab === "users" && <article className="settings-card"><header><div><p>USERS & TEAMS</p><h2>组织用户</h2></div><PrimaryButton onClick={() => onToast("用户邀请已发送")}><PlusOutlined /> 添加用户</PrimaryButton></header><table className="data-table"><thead><tr><th>用户</th><th>角色</th><th>团队</th><th>数据范围</th><th>状态</th><th>操作</th></tr></thead><tbody>{users.map((user) => <tr key={user.id}><td><div className="user-cell"><span className="avatar avatar--small">{user.name.slice(0, 1)}</span><strong>{user.name}</strong></div></td><td>{user.role}</td><td>{user.team}</td><td>{user.role === "销售" ? "本人数据" : user.role === "销售经理" ? "团队数据" : "全部数据"}</td><td><span className={`task-result ${user.status === "停用" ? "task-result--muted" : ""}`}>{user.status}</span></td><td><button type="button" className="link-button" onClick={() => setUsers((current) => current.map((item) => item.id === user.id ? { ...item, status: item.status === "启用" ? "停用" : "启用" } : item))}>{user.status === "启用" ? "停用" : "启用"}</button></td></tr>)}</tbody></table></article>}
+      {tab === "users" && <article className="settings-card"><header><div><p>USERS & TEAMS</p><h2>组织用户</h2></div><PrimaryButton onClick={() => setInviteOpen(true)}><PlusOutlined /> 添加用户</PrimaryButton></header><table className="data-table"><thead><tr><th>用户</th><th>角色</th><th>团队</th><th>数据范围</th><th>状态</th><th>操作</th></tr></thead><tbody>{users.map((user) => <tr key={user.id}><td><div className="user-cell"><span className="avatar avatar--small">{user.name.slice(0, 1)}</span><strong>{user.name}</strong></div></td><td>{user.role}</td><td>{user.team}</td><td>{user.role === "销售" ? "本人数据" : user.role === "销售经理" ? "团队数据" : "全部数据"}</td><td><span className={`task-result ${user.status === "停用" ? "task-result--muted" : ""}`}>{user.status}</span></td><td><button type="button" className="link-button" onClick={() => toggleUser(user)}>{user.status === "启用" ? "停用" : "启用"}</button></td></tr>)}</tbody></table></article>}
       {tab === "permissions" && <article className="settings-card"><header><div><p>ROLE-BASED ACCESS</p><h2>角色与数据范围</h2></div><GhostButton onClick={() => onToast("权限矩阵已导出")}><DownloadOutlined /> 导出矩阵</GhostButton></header><table className="permission-table"><thead><tr><th>功能模块</th><th>销售</th><th>销售经理</th><th>售前</th><th>管理员</th></tr></thead><tbody>{[["作战地图", "本人", "团队", "全部", "全部"], ["客户与商机", "维护本人", "维护团队", "查看全部", "全部管理"], ["BI 分析", "本人", "团队", "全部", "全部"], ["数据导入", "本人模板", "团队模板", "只读", "全部管理"], ["系统配置", "无", "无", "无", "全部管理"]].map((row) => <tr key={row[0]}>{row.map((cell, index) => <td key={cell}>{index === 0 ? <strong>{cell}</strong> : <span className={cell === "无" ? "permission-none" : "permission-yes"}>{cell !== "无" && <CheckOutlined />} {cell}</span>}</td>)}</tr>)}</tbody></table></article>}
       {tab === "pipeline" && <article className="settings-card"><header><div><p>SALES PIPELINE</p><h2>阶段、概率与 SLA</h2></div><GhostButton onClick={() => setPipeline((current) => [...current, { key: `custom-${Date.now()}`, label: "新阶段", probability: 50, sla: 7 }])}><PlusOutlined /> 添加阶段</GhostButton></header><div className="pipeline-settings">{pipeline.map((stage, index) => <div key={stage.key}><b>{index + 1}</b><input value={stage.label} onChange={(event) => setPipeline((current) => current.map((item) => item.key === stage.key ? { ...item, label: event.target.value } : item))} /><label>默认概率<input type="number" value={stage.probability} onChange={(event) => setPipeline((current) => current.map((item) => item.key === stage.key ? { ...item, probability: Number(event.target.value) } : item))} />%</label><label>阶段 SLA<input type="number" value={stage.sla ?? ""} onChange={(event) => setPipeline((current) => current.map((item) => item.key === stage.key ? { ...item, sla: Number(event.target.value) } : item))} />天</label><MoreOutlined /></div>)}</div></article>}
       {tab === "rules" && <article className="settings-card"><header><div><p>ALERT RULES</p><h2>自动提醒规则</h2></div><GhostButton onClick={() => setRules((current) => [...current, { name: "新提醒规则", type: "CUSTOM", severity: "黄色", enabled: false }])}><PlusOutlined /> 新建规则</GhostButton></header><div className="rule-list">{rules.map((rule, index) => <div key={`${rule.type}-${index}`}><i className={rule.severity === "红色" ? "rule-color rule-color--red" : "rule-color"} /><span><strong>{rule.name}</strong><small>{rule.type}</small></span><em>{rule.severity}</em><label className="switch"><input type="checkbox" checked={rule.enabled} onChange={() => setRules((current) => current.map((item, i) => i === index ? { ...item, enabled: !item.enabled } : item))} /><span /></label></div>)}</div></article>}
+      {inviteOpen && <Modal title={productionMode ? "邀请企业用户" : "添加演示用户"} onClose={() => setInviteOpen(false)} width={520}><UserInviteForm onSubmit={inviteUser} onCancel={() => setInviteOpen(false)} saving={inviteSaving} /></Modal>}
     </div>
   );
 }
 
 export function App() {
-  const [projects, setProjects] = usePersistentState("battlemap-projects", INITIAL_PROJECTS);
-  const [alerts, setAlerts] = usePersistentState("battlemap-alerts", INITIAL_ALERTS);
+  const auth = useAuth();
+  const [demoProjects, setDemoProjects] = usePersistentState("battlemap-projects", INITIAL_PROJECTS);
+  const [demoAlerts, setDemoAlerts] = usePersistentState("battlemap-alerts", INITIAL_ALERTS);
+  const [backendProjects, setBackendProjects] = useState([]);
+  const [backendAlerts, setBackendAlerts] = useState([]);
+  const [directoryUsers, setDirectoryUsers] = useState(USERS);
+  const [dataLoading, setDataLoading] = useState(false);
+  const [dataError, setDataError] = useState("");
   const [activePage, setActivePage] = useState("map");
-  const [roleKey, setRoleKey] = useState("admin");
+  const [demoRoleKey, setDemoRoleKey] = useState("admin");
   const [selectedProjectId, setSelectedProjectId] = useState("P2026001");
   const [detailProject, setDetailProject] = useState(null);
   const [editingProject, setEditingProject] = useState(null);
@@ -967,10 +1194,39 @@ export function App() {
   const [bulkDeleteIds, setBulkDeleteIds] = useState([]);
   const [toast, setToast] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [savingProject, setSavingProject] = useState(false);
+
+  const productionMode = auth.backendConfigured;
+  const projects = productionMode ? backendProjects : demoProjects;
+  const alerts = productionMode ? backendAlerts : demoAlerts;
+  const roleKey = productionMode ? auth.profile?.role ?? "sales" : demoRoleKey;
+  const currentUser = productionMode
+    ? auth.profile
+    : { display_name: ROLE_PRESETS[roleKey].user, email: "演示账号" };
+
+  const refreshBackendData = useCallback(async () => {
+    if (!productionMode || !auth.session || !auth.profile) return;
+    setDataLoading(true);
+    setDataError("");
+    try {
+      const [data, users] = await Promise.all([loadBackendData(), loadDirectory()]);
+      setBackendProjects(data.projects);
+      setBackendAlerts(data.alerts);
+      setDirectoryUsers(users);
+    } catch (error) {
+      setDataError(error.message || "后端数据加载失败");
+    } finally {
+      setDataLoading(false);
+    }
+  }, [auth.profile, auth.session, productionMode]);
+
+  useEffect(() => {
+    refreshBackendData();
+  }, [refreshBackendData]);
 
   const visibleProjects = useMemo(
-    () => (roleKey === "sales" ? projects.filter((project) => project.owner === ROLE_PRESETS.sales.user) : projects),
-    [projects, roleKey],
+    () => (productionMode || roleKey !== "sales" ? projects : projects.filter((project) => project.owner === ROLE_PRESETS.sales.user)),
+    [productionMode, projects, roleKey],
   );
 
   useEffect(() => {
@@ -992,51 +1248,126 @@ export function App() {
     setFormOpen(true);
   };
 
-  const saveProject = (form) => {
-    if (editingProject) {
-      setProjects((current) => current.map((project) => project.id === editingProject.id ? { ...project, ...form, updatedAt: "2026-06-29 14:45" } : project));
-      notify("项目已更新");
-    } else {
-      const id = `P${Date.now().toString().slice(-7)}`;
-      const cityCoordinates = { 杭州: [120.19, 30.19], 上海: [121.47, 31.23], 成都: [104.06, 30.67], 重庆: [106.55, 29.56] };
-      setProjects((current) => [{ ...form, id, coordinates: cityCoordinates[form.city] ?? [116.4, 39.9], updatedAt: "2026-06-29 14:45" }, ...current]);
-      notify("新项目已创建并同步到地图");
+  const saveProject = async (form) => {
+    setSavingProject(true);
+    try {
+      if (productionMode) {
+        const saved = await saveBackendProject(form, editingProject, auth.session.user.id);
+        setBackendProjects((current) => editingProject
+          ? current.map((project) => project.id === saved.id ? saved : project)
+          : [saved, ...current]);
+      } else if (editingProject) {
+        setDemoProjects((current) => current.map((project) => project.id === editingProject.id ? { ...project, ...form, updatedAt: "2026-06-29 14:45" } : project));
+      } else {
+        const id = `P${Date.now().toString().slice(-7)}`;
+        setDemoProjects((current) => [{ ...form, id, updatedAt: "2026-06-29 14:45" }, ...current]);
+      }
+      notify(editingProject ? "项目已更新" : "新项目已创建并同步到地图");
+      setFormOpen(false);
+      setEditingProject(null);
+    } catch (error) {
+      notify(error.message || "项目保存失败", "error");
+    } finally {
+      setSavingProject(false);
     }
-    setFormOpen(false);
-    setEditingProject(null);
   };
 
-  const confirmDelete = () => {
-    if (bulkDeleteIds.length) {
-      setProjects((current) => current.filter((project) => !bulkDeleteIds.includes(project.id)));
-      notify(`已移入回收站 ${bulkDeleteIds.length} 条记录`);
+  const confirmDelete = async () => {
+    const ids = bulkDeleteIds.length ? bulkDeleteIds : deleteTarget ? [deleteTarget.id] : [];
+    if (!ids.length) return;
+    try {
+      if (productionMode) {
+        await softDeleteBackendProjects(ids);
+        setBackendProjects((current) => current.filter((project) => !ids.includes(project.id)));
+      } else {
+        setDemoProjects((current) => current.filter((project) => !ids.includes(project.id)));
+      }
+      notify(ids.length > 1 ? `已移入回收站 ${ids.length} 条记录` : "项目已移入回收站");
       setBulkDeleteIds([]);
-    } else if (deleteTarget) {
-      setProjects((current) => current.filter((project) => project.id !== deleteTarget.id));
-      notify("项目已移入回收站");
       setDeleteTarget(null);
+    } catch (error) {
+      notify(error.message || "删除失败", "error");
     }
   };
+
+  const applyAlertUpdate = (updater) => {
+    const previous = alerts;
+    const next = typeof updater === "function" ? updater(previous) : updater;
+    if (productionMode) {
+      setBackendAlerts(next);
+      updateBackendAlerts(next, previous).catch((error) => {
+        setBackendAlerts(previous);
+        notify(error.message || "提醒状态更新失败", "error");
+      });
+    } else {
+      setDemoAlerts(next);
+    }
+  };
+
+  const importRows = async (rows) => {
+    try {
+      if (productionMode) {
+        const data = await importBackendProjects(rows);
+        setBackendProjects(data.projects);
+        setBackendAlerts(data.alerts);
+      } else {
+        const timestamp = Date.now();
+        const imported = rows.map((row, index) => ({ ...row, id: `P${String(timestamp + index).slice(-9)}`, updatedAt: new Date().toLocaleString("zh-CN", { hour12: false }) }));
+        setDemoProjects((current) => [...imported, ...current]);
+      }
+      setImportOpen(false);
+      notify(`已完成 ${rows.length} 条项目数据入库`);
+    } catch (error) {
+      notify(error.message || "批量导入失败，数据库未写入", "error");
+    }
+  };
+
+  const inviteUser = async (input) => {
+    if (productionMode) {
+      await createBackendUser(input);
+      await refreshBackendData();
+      return;
+    }
+    setDirectoryUsers((current) => [...current, { id: `demo-${Date.now()}`, name: input.displayName, role: { sales: "销售", presales: "售前", admin: "管理员" }[input.role], roleKey: input.role, team: "未分组", status: "启用" }]);
+  };
+
+  const toggleUser = async (userId, active) => {
+    if (productionMode) {
+      await setBackendUserActive(userId, active);
+      await refreshBackendData();
+      return;
+    }
+    setDirectoryUsers((current) => current.map((user) => user.id === userId ? { ...user, status: active ? "启用" : "停用" } : user));
+  };
+
+  if (productionMode && auth.loading) return <AppLoadingScreen />;
+  if (productionMode && !auth.session) return <LoginScreen onSignIn={auth.signIn} error={auth.error} />;
+  if (productionMode && (auth.error && !auth.profile)) return <DataErrorScreen message={auth.error} onRetry={() => window.location.reload()} onSignOut={auth.signOut} />;
+  if (productionMode && !auth.profile) return <AppLoadingScreen />;
+  if (productionMode && !auth.profile.active) return <AccountBlockedScreen onSignOut={auth.signOut} />;
+  if (productionMode && dataLoading) return <AppLoadingScreen message="正在加载营销数据" />;
+  if (productionMode && dataError) return <DataErrorScreen message={dataError} onRetry={refreshBackendData} onSignOut={auth.signOut} />;
 
   const page = (() => {
     switch (activePage) {
-      case "map": return <MapPage projects={visibleProjects} alerts={alerts} roleKey={roleKey} selectedProjectId={selectedProjectId} onSelectProject={setSelectedProjectId} onGoToProject={setDetailProject} />;
+      case "map": return <MapPage projects={visibleProjects} alerts={alerts} roleKey={roleKey} currentUserName={currentUser.display_name} selectedProjectId={selectedProjectId} onSelectProject={setSelectedProjectId} onGoToProject={setDetailProject} />;
       case "workbench": return <WorkbenchPage projects={visibleProjects} onCreate={openCreate} onView={setDetailProject} onEdit={openEdit} onDelete={setDeleteTarget} onBulkDelete={setBulkDeleteIds} />;
       case "analysis": return <AnalysisPage projects={visibleProjects} />;
       case "management": return <ManagementPage projects={visibleProjects} onCreate={openCreate} onImportOpen={() => setImportOpen(true)} onToast={notify} />;
-      case "alerts": return <AlertsPage alerts={alerts} setAlerts={setAlerts} projects={visibleProjects} onViewProject={setDetailProject} />;
-      case "system": return <SystemPage roleKey={roleKey} onToast={notify} />;
+      case "alerts": return <AlertsPage alerts={alerts} setAlerts={applyAlertUpdate} projects={visibleProjects} onViewProject={setDetailProject} />;
+      case "system": return <SystemPage roleKey={roleKey} onToast={notify} initialUsers={directoryUsers} productionMode={productionMode} onInviteUser={inviteUser} onToggleUser={toggleUser} />;
       default: return null;
     }
   })();
 
   return (
     <div className={`app-shell app-shell--${activePage}`}>
-      <Sidebar activePage={activePage} setActivePage={setActivePage} roleKey={roleKey} setRoleKey={setRoleKey} alertsCount={alerts.filter((alert) => alert.status === "待处理").length} collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} />
+      {!productionMode && <div className="demo-mode-banner"><InfoCircleOutlined /> 演示数据模式：配置后端后将自动启用登录、数据库和服务端权限</div>}
+      <Sidebar activePage={activePage} setActivePage={setActivePage} roleKey={roleKey} setRoleKey={setDemoRoleKey} alertsCount={alerts.filter((alert) => alert.status === "待处理").length} collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} currentUser={currentUser} productionMode={productionMode} onSignOut={auth.signOut} />
       <div className="app-content">{page}</div>
       {detailProject && <DetailModal project={detailProject} onClose={() => setDetailProject(null)} onEdit={openEdit} />}
-      {formOpen && <Modal title={editingProject ? "编辑项目" : "新建项目"} onClose={() => setFormOpen(false)}><ProjectForm initialProject={editingProject} onSubmit={saveProject} onCancel={() => setFormOpen(false)} /></Modal>}
-      {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImport={(count) => { setImportOpen(false); notify(`预检通过并导入 ${count} 条数据`); }} />}
+      {formOpen && <Modal title={editingProject ? "编辑项目" : "新建项目"} onClose={() => setFormOpen(false)}><ProjectForm initialProject={editingProject} onSubmit={saveProject} onCancel={() => setFormOpen(false)} users={directoryUsers} saving={savingProject} /></Modal>}
+      {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImport={importRows} />}
       {(deleteTarget || bulkDeleteIds.length > 0) && <Modal title="确认移入回收站" onClose={() => { setDeleteTarget(null); setBulkDeleteIds([]); }} width={480}><div className="confirm-dialog"><WarningFilled /><p>记录将从地图、分析和工作台中移除，管理员仍可在回收站恢复。</p></div><footer className="modal__footer"><GhostButton onClick={() => { setDeleteTarget(null); setBulkDeleteIds([]); }}>取消</GhostButton><PrimaryButton className="danger-primary" onClick={confirmDelete}>确认删除</PrimaryButton></footer></Modal>}
       <Toast toast={toast} onClose={() => setToast(null)} />
     </div>
