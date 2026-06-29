@@ -7,6 +7,12 @@ export const REGION_PROVINCE_CODES = {
   西南: new Set(["500000", "510000", "520000", "530000", "540000"]),
 };
 
+const DRILL_LEVEL_INDEX = {
+  province: 0,
+  city: 1,
+  district: 2,
+};
+
 const PROJECT_ADCODES = {
   P2026001: "330108",
   P2026002: "310104",
@@ -121,4 +127,24 @@ export function nextDrillItem(featureProperties) {
     name: featureProperties.name,
     level,
   };
+}
+
+export function isDrillItemInRegion(item, regionMode) {
+  if (!item || regionMode === "全国") return Boolean(item);
+  return REGION_PROVINCE_CODES[regionMode]?.has(`${item.adcode.slice(0, 2)}0000`) ?? false;
+}
+
+export function buildDrillPath(currentPath, nextItem) {
+  if (!nextItem || !(nextItem.level in DRILL_LEVEL_INDEX)) return currentPath;
+  const nextIndex = DRILL_LEVEL_INDEX[nextItem.level];
+
+  if (nextIndex === 0) return [nextItem];
+
+  const parent = currentPath[nextIndex - 1];
+  if (!parent) return currentPath;
+
+  const prefixLength = nextItem.level === "city" ? 2 : 4;
+  if (parent.adcode.slice(0, prefixLength) !== nextItem.adcode.slice(0, prefixLength)) return currentPath;
+
+  return [...currentPath.slice(0, nextIndex), nextItem];
 }

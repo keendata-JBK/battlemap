@@ -54,9 +54,11 @@ import {
   USERS,
 } from "./data.js";
 import {
+  buildDrillPath,
   createRegionBoundary,
   getBoundaryRequest,
   getProjectAdcode,
+  isDrillItemInRegion,
   loadBoundary,
   nextDrillItem,
   projectMatchesMapScope,
@@ -545,10 +547,12 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
   const [regionFilter, setRegionFilter] = useState("全部区域");
   const [healthFilter, setHealthFilter] = useState("全部健康度");
   const [fullScreen, setFullScreen] = useState(false);
+  const mapTransitioningRef = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
     const request = getBoundaryRequest(drillPath);
+    mapTransitioningRef.current = true;
     setMapLoading(true);
     setMapError("");
     loadBoundary(request.adcode, { full: request.full, signal: controller.signal })
@@ -556,11 +560,13 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
         if (controller.signal.aborted) return;
         setGeoJson(drillPath.length ? boundary : createRegionBoundary(boundary, regionMode));
         setMapLoading(false);
+        mapTransitioningRef.current = false;
       })
       .catch((error) => {
         if (controller.signal.aborted) return;
         setMapError(error.message || "地图边界加载失败");
         setMapLoading(false);
+        mapTransitioningRef.current = false;
       });
     return () => controller.abort();
   }, [drillPath, mapReloadToken, regionMode]);
@@ -589,22 +595,59 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
   const currentMapLevel = drillPath.at(-1)?.level ?? (regionMode === "全国" ? "country" : "region");
 
   const changeRegion = useCallback((mode) => {
+    if (mode === regionMode && drillPath.length === 0) return;
+    mapTransitioningRef.current = true;
+    setMapLoading(true);
+    setMapError("");
     setRegionMode(mode);
     setDrillPath([]);
     onSelectProject(null);
-  }, [onSelectProject]);
+  }, [drillPath.length, onSelectProject, regionMode]);
 
   const drillInto = useCallback((properties) => {
     const next = nextDrillItem(properties);
-    if (!next || drillPath.at(-1)?.level === "district") return;
-    setDrillPath((current) => [...current, next]);
+    if (!next || mapLoading || mapError || mapTransitioningRef.current || drillPath.at(-1)?.level === "district") return;
+    if (!isDrillItemInRegion(next, regionMode)) return;
+    const nextPath = buildDrillPath(drillPath, next);
+    if (nextPath === drillPath) return;
+    mapTransitioningRef.current = true;
+    setMapLoading(true);
+    setDrillPath(nextPath);
     onSelectProject(null);
-  }, [drillPath, onSelectProject]);
+  }, [drillPath, mapError, mapLoading, onSelectProject, regionMode]);
 
   const goToCrumb = useCallback((index) => {
+    mapTransitioningRef.current = true;
+    setMapLoading(true);
+    setMapError("");
     setDrillPath((current) => current.slice(0, index + 1));
     onSelectProject(null);
   }, [onSelectProject]);
+
+  const goToRoot = useCallback(() => {
+    if (!drillPath.length && !mapError) return;
+    mapTransitioningRef.current = true;
+    setMapLoading(true);
+    setMapError("");
+    setDrillPath([]);
+    onSelectProject(null);
+  }, [drillPath.length, mapError, onSelectProject]);
+
+  const goBackOneLevel = useCallback(() => {
+    if (!drillPath.length) {
+      mapTransitioningRef.current = true;
+      setMapLoading(true);
+      setMapError("");
+      setMapReloadToken((value) => value + 1);
+      onSelectProject(null);
+      return;
+    }
+    mapTransitioningRef.current = true;
+    setMapLoading(true);
+    setMapError("");
+    setDrillPath((current) => current.slice(0, -1));
+    onSelectProject(null);
+  }, [drillPath.length, onSelectProject]);
 
   return (
     <div className={`map-page ${fullScreen ? "map-page--fullscreen" : ""}`}>
@@ -635,7 +678,7 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
         <div className="map-breadcrumb">
           <button type="button" onClick={() => changeRegion("全国")}>中国</button>
           <RightOutlined />
-          <button type="button" className={!drillPath.length ? "is-current" : ""} onClick={() => { setDrillPath([]); onSelectProject(null); }}>
+          <button type="button" className={!drillPath.length ? "is-current" : ""} onClick={goToRoot}>
             {regionMode === "全国" ? "全国" : `${regionMode}区域`}
           </button>
           {drillPath.map((item, index) => (
@@ -655,6 +698,7 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
             geoJson={geoJson}
             mapKey={`${regionMode}-${drillPath.map((item) => item.adcode).join("-") || "root"}`}
             level={currentMapLevel}
+            drillDisabled={mapLoading || Boolean(mapError)}
           />
           {mapLoading && <div className="map-state"><LoadingOutlined spin /><strong>正在加载行政区边界</strong><span>支持省、市、区县逐级下钻</span></div>}
           {mapError && <div className="map-state map-state--error"><InfoCircleOutlined /><strong>{mapError}</strong><button type="button" onClick={() => setMapReloadToken((value) => value + 1)}>重新加载</button></div>}
@@ -663,7 +707,7 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
           )}
           <div className="map-controls">
             <IconButton label="全屏" onClick={() => setFullScreen((value) => !value)}><FullscreenOutlined /></IconButton>
-            <IconButton label={drillPath.length ? "返回上一级" : "定位到当前区域"} onClick={() => { if (drillPath.length) setDrillPath((current) => current.slice(0, -1)); else setMapReloadToken((value) => value + 1); onSelectProject(null); }}><AimOutlined /></IconButton>
+            <IconButton label={drillPath.length ? "返回上一级" : "定位到当前区域"} onClick={goBackOneLevel}><AimOutlined /></IconButton>
           </div>
           <div className="map-legend">
             <strong>项目价值</strong>
