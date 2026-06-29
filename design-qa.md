@@ -19,6 +19,7 @@ The implementation preserves the selected C direction: white primary navigation 
 4. **P2 · Responsive resilience** — Verified no document-level horizontal overflow at tablet and mobile widths. Navigation becomes a fixed bottom bar; maps, tables, toolbars, forms, and charts remain operable.
 5. **P1 · Administrative drilldown** — Replaced the visual-only regional zoom with real GeoJSON boundary switching. Browser regression confirmed `华东区域 → 浙江省 → 杭州市 → 临安区`, scope-aware project totals, and breadcrumb return.
 6. **P1 · Production data entry** — Added authenticated loading, customer/contact/project fields, six-digit administrative codes, coordinate lookup, CSV validation, and administrator-managed users. The production login state and automatic district positioning were visually checked.
+7. **P1 · Drilldown race and hosted boundary access** — Prevented clicks while a boundary transition is pending, enforced province/city/district parent-child prefixes, and routed hosted boundary requests through the production Edge Function. A rapid Southwest interaction now resolves to a valid `四川省 → 泸州市 → 泸县` path instead of appending unrelated provinces.
 
 ## Validation
 
@@ -28,5 +29,6 @@ The implementation preserves the selected C direction: white primary navigation 
 - Source and the Hangzhou district-level implementation were reviewed side by side in a single comparison canvas.
 - Sales role shows only Zhang Wei-owned rows; sales access to system administration is denied.
 - Database migration parses successfully; unit tests cover map scope, boundary request, and drill path behavior.
+- Supabase production boundary proxy returns the Sichuan city collection with HTTP 200; anonymous business-table access is rejected.
 
 final result: passed

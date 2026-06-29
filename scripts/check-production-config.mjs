@@ -1,5 +1,8 @@
+import { loadEnv } from "vite";
+
 const required = ["VITE_SUPABASE_URL", "VITE_SUPABASE_ANON_KEY"];
-const missing = required.filter((name) => !process.env[name]?.trim());
+const env = { ...loadEnv("production", process.cwd(), ""), ...process.env };
+const missing = required.filter((name) => !env[name]?.trim());
 
 if (missing.length) {
   console.error(`缺少生产环境配置：${missing.join(", ")}`);

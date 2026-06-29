@@ -1,3 +1,5 @@
+begin;
+
 create extension if not exists pgcrypto;
 
 create table public.teams (
@@ -447,3 +449,5 @@ values
   ('解决方案部', array['华东区域', '西南区域']),
   ('数字化运营部', array['华东区域', '西南区域'])
 on conflict (name) do nothing;
+
+commit;

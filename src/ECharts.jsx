@@ -27,7 +27,9 @@ export function EChart({ option, className = "", onEvents = {}, ariaLabel = "数
     const chart = echarts.init(hostRef.current, undefined, { renderer: "canvas" });
     chartRef.current = chart;
 
-    const observer = new ResizeObserver(() => chart.resize());
+    const observer = new ResizeObserver(() => {
+      if (!chart.isDisposed()) chart.resize();
+    });
     observer.observe(hostRef.current);
 
     return () => {
@@ -41,11 +43,14 @@ export function EChart({ option, className = "", onEvents = {}, ariaLabel = "数
     const chart = chartRef.current;
     if (!chart) return undefined;
     Object.entries(onEvents).forEach(([eventName, handler]) => chart.on(eventName, handler));
-    return () => Object.entries(onEvents).forEach(([eventName, handler]) => chart.off(eventName, handler));
+    return () => {
+      if (!chart.isDisposed()) Object.entries(onEvents).forEach(([eventName, handler]) => chart.off(eventName, handler));
+    };
   }, [onEvents]);
 
   useEffect(() => {
-    chartRef.current?.setOption(option, true);
+    const chart = chartRef.current;
+    if (chart && !chart.isDisposed()) chart.setOption(option, true);
   }, [option]);
 
   return <div ref={hostRef} className={className} role="img" aria-label={ariaLabel} />;
@@ -59,6 +64,7 @@ export function ChinaBattleMap({
   geoJson,
   mapKey,
   level = "country",
+  drillDisabled = false,
 }) {
   const mapName = useMemo(() => {
     if (!geoJson) return null;
@@ -177,12 +183,13 @@ export function ChinaBattleMap({
           return;
         }
         if (params.componentType === "geo" && params.name) {
+          if (drillDisabled) return;
           const feature = geoJson?.features.find((item) => item.properties?.name === params.name);
           if (feature) onDrill(feature.properties);
         }
       },
     }),
-    [geoJson, onDrill, onSelectProject],
+    [drillDisabled, geoJson, onDrill, onSelectProject],
   );
 
   if (!geoJson || !mapName) return <div className="china-map" role="status" aria-label="地图边界加载中" />;
