@@ -65,7 +65,7 @@ export function LoginScreen({ onSignIn, onRequestPasswordReset, error }) {
   );
 }
 
-export function PasswordSetupScreen({ onComplete, error }) {
+export function PasswordSetupScreen({ onComplete, error, forced = false }) {
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -101,7 +101,7 @@ export function PasswordSetupScreen({ onComplete, error }) {
           <span><SafetyCertificateOutlined /></span>
           <div><p>ACCOUNT ACTIVATION</p><h1>设置登录密码</h1></div>
         </div>
-        <p className="auth-card__intro">邀请已验证。请设置不少于 8 位的密码，完成后将直接进入营销作战地图。</p>
+        <p className="auth-card__intro">{forced ? "当前使用的是管理员生成的临时密码。请先设置不少于 8 位的新密码，完成后进入系统。" : "邀请已验证。请设置不少于 8 位的密码，完成后将直接进入营销作战地图。"}</p>
         <form onSubmit={submit}>
           <label><span>新密码</span><div><LockOutlined /><input type="password" required minLength={8} autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 位字符" /></div></label>
           <label><span>确认新密码</span><div><LockOutlined /><input type="password" required minLength={8} autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="请再次输入" /></div></label>

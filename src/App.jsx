@@ -10,6 +10,7 @@ import {
   CheckOutlined,
   CloseOutlined,
   CloudUploadOutlined,
+  CopyOutlined,
   DatabaseOutlined,
   DeleteOutlined,
   DownOutlined,
@@ -1173,20 +1174,46 @@ function UserInviteForm({ onSubmit, onCancel, saving }) {
   );
 }
 
+function TemporaryCredentials({ credentials, onClose, onToast }) {
+  const copyCredentials = async () => {
+    try {
+      await navigator.clipboard.writeText(`登录地址：https://keendata-jbk.github.io/battlemap/\n账号：${credentials.email}\n临时密码：${credentials.password}`);
+      onToast("临时登录凭据已复制");
+    } catch {
+      onToast("复制失败，请手动选择凭据", "error");
+    }
+  };
+
+  return (
+    <div className="credential-handoff">
+      <div className="credential-handoff__notice"><SafetyCertificateOutlined /><span><strong>用户已创建，邮件未发送</strong><small>Supabase 邮件服务触发限流，系统已启用临时密码兜底。该用户首次登录后必须修改密码。</small></span></div>
+      <label>登录账号<input readOnly value={credentials.email} /></label>
+      <label>临时密码<input readOnly value={credentials.password} /></label>
+      <p>请通过企业微信、电话等安全渠道单独发送，不要在公开群聊中传递。</p>
+      <footer className="modal__footer"><GhostButton onClick={onClose}>完成</GhostButton><PrimaryButton onClick={copyCredentials}><CopyOutlined /> 复制登录凭据</PrimaryButton></footer>
+    </div>
+  );
+}
+
 function SystemPage({ roleKey, onToast, initialUsers = USERS, productionMode, onInviteUser, onToggleUser }) {
   const [tab, setTab] = useState("users");
   const [users, setUsers] = useState(initialUsers);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteSaving, setInviteSaving] = useState(false);
+  const [temporaryCredentials, setTemporaryCredentials] = useState(null);
   const [pipeline, setPipeline] = useState(STAGES.map((stage, index) => ({ ...stage, sla: [3, 7, 14, 10, 7, null][index] })));
   const [rules, setRules] = useState([{ name: "任务逾期", type: "TASK_OVERDUE", severity: "红色", enabled: true }, { name: "阶段停滞", type: "STAGE_STAGNANT", severity: "黄色", enabled: true }, { name: "预计成交日已过", type: "CLOSE_DATE_PASSED", severity: "红色", enabled: true }, { name: "缺少下一步动作", type: "NO_NEXT_ACTION", severity: "黄色", enabled: true }]);
   useEffect(() => setUsers(initialUsers), [initialUsers]);
   const inviteUser = async (form) => {
     setInviteSaving(true);
     try {
-      await onInviteUser(form);
+      const result = await onInviteUser(form);
       setInviteOpen(false);
-      onToast("用户邀请已发送");
+      if (result?.delivery === "temporary_password") {
+        setTemporaryCredentials({ email: form.email, password: result.temporaryPassword });
+      } else {
+        onToast("用户邀请已发送");
+      }
     } catch (error) {
       onToast(error.message || "用户邀请失败", "error");
     } finally {
@@ -1214,6 +1241,7 @@ function SystemPage({ roleKey, onToast, initialUsers = USERS, productionMode, on
       {tab === "pipeline" && <article className="settings-card"><header><div><p>SALES PIPELINE</p><h2>阶段、概率与 SLA</h2></div><GhostButton onClick={() => setPipeline((current) => [...current, { key: `custom-${Date.now()}`, label: "新阶段", probability: 50, sla: 7 }])}><PlusOutlined /> 添加阶段</GhostButton></header><div className="pipeline-settings">{pipeline.map((stage, index) => <div key={stage.key}><b>{index + 1}</b><input value={stage.label} onChange={(event) => setPipeline((current) => current.map((item) => item.key === stage.key ? { ...item, label: event.target.value } : item))} /><label>默认概率<input type="number" value={stage.probability} onChange={(event) => setPipeline((current) => current.map((item) => item.key === stage.key ? { ...item, probability: Number(event.target.value) } : item))} />%</label><label>阶段 SLA<input type="number" value={stage.sla ?? ""} onChange={(event) => setPipeline((current) => current.map((item) => item.key === stage.key ? { ...item, sla: Number(event.target.value) } : item))} />天</label><MoreOutlined /></div>)}</div></article>}
       {tab === "rules" && <article className="settings-card"><header><div><p>ALERT RULES</p><h2>自动提醒规则</h2></div><GhostButton onClick={() => setRules((current) => [...current, { name: "新提醒规则", type: "CUSTOM", severity: "黄色", enabled: false }])}><PlusOutlined /> 新建规则</GhostButton></header><div className="rule-list">{rules.map((rule, index) => <div key={`${rule.type}-${index}`}><i className={rule.severity === "红色" ? "rule-color rule-color--red" : "rule-color"} /><span><strong>{rule.name}</strong><small>{rule.type}</small></span><em>{rule.severity}</em><label className="switch"><input type="checkbox" checked={rule.enabled} onChange={() => setRules((current) => current.map((item, i) => i === index ? { ...item, enabled: !item.enabled } : item))} /><span /></label></div>)}</div></article>}
       {inviteOpen && <Modal title={productionMode ? "邀请企业用户" : "添加演示用户"} onClose={() => setInviteOpen(false)} width={520}><UserInviteForm onSubmit={inviteUser} onCancel={() => setInviteOpen(false)} saving={inviteSaving} /></Modal>}
+      {temporaryCredentials && <Modal title="临时登录凭据" onClose={() => setTemporaryCredentials(null)} width={520}><TemporaryCredentials credentials={temporaryCredentials} onClose={() => setTemporaryCredentials(null)} onToast={onToast} /></Modal>}
     </div>
   );
 }
@@ -1368,9 +1396,9 @@ export function App() {
 
   const inviteUser = async (input) => {
     if (productionMode) {
-      await createBackendUser(input);
+      const result = await createBackendUser(input);
       await refreshBackendData();
-      return;
+      return result;
     }
     setDirectoryUsers((current) => [...current, { id: `demo-${Date.now()}`, name: input.displayName, role: { sales: "销售", presales: "售前", admin: "管理员" }[input.role], roleKey: input.role, team: "未分组", status: "启用" }]);
   };
@@ -1384,7 +1412,7 @@ export function App() {
     setDirectoryUsers((current) => current.map((user) => user.id === userId ? { ...user, status: active ? "启用" : "停用" } : user));
   };
 
-  if (productionMode && auth.passwordSetupRequired && auth.session) return <PasswordSetupScreen onComplete={auth.completePasswordSetup} error={auth.error} />;
+  if (productionMode && (auth.passwordSetupRequired || auth.profile?.password_change_required) && auth.session) return <PasswordSetupScreen onComplete={auth.completePasswordSetup} error={auth.error} forced={Boolean(auth.profile?.password_change_required)} />;
   if (productionMode && auth.loading) return <AppLoadingScreen />;
   if (productionMode && !auth.session) return <LoginScreen onSignIn={auth.signIn} onRequestPasswordReset={auth.requestPasswordReset} error={auth.error} />;
   if (productionMode && (auth.error && !auth.profile)) return <DataErrorScreen message={auth.error} onRetry={() => window.location.reload()} onSignOut={auth.signOut} />;
