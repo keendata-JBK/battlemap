@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { backendConfigured, supabase } from "../lib/supabase.js";
+import { clearAuthCallbackUrl } from "./authCallback.js";
+import { backendConfigured, initialAuthCallbackType, supabase } from "../lib/supabase.js";
 
 const AuthContext = createContext(null);
 
@@ -8,6 +9,9 @@ export function AuthProvider({ children }) {
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(backendConfigured);
   const [error, setError] = useState("");
+  const [passwordSetupRequired, setPasswordSetupRequired] = useState(
+    initialAuthCallbackType === "invite" || initialAuthCallbackType === "recovery",
+  );
 
   useEffect(() => {
     if (!backendConfigured) return undefined;
@@ -18,9 +22,13 @@ export function AuthProvider({ children }) {
       setSession(data.session ?? null);
       setLoading(false);
     });
-    const { data: subscription } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: subscription } = supabase.auth.onAuthStateChange((event, nextSession) => {
       setSession(nextSession);
-      if (!nextSession) setProfile(null);
+      if (event === "PASSWORD_RECOVERY") setPasswordSetupRequired(true);
+      if (!nextSession) {
+        setProfile(null);
+        if (event === "SIGNED_OUT") setPasswordSetupRequired(false);
+      }
     });
     return () => {
       active = false;
@@ -59,6 +67,7 @@ export function AuthProvider({ children }) {
     profile,
     loading,
     error,
+    passwordSetupRequired,
     async signIn(email, password) {
       setError("");
       const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
@@ -70,8 +79,28 @@ export function AuthProvider({ children }) {
     async signOut() {
       await supabase.auth.signOut();
       setProfile(null);
+      setPasswordSetupRequired(false);
     },
-  }), [error, loading, profile, session]);
+    async requestPasswordReset(email) {
+      setError("");
+      const redirectTo = new URL(import.meta.env.BASE_URL, window.location.origin).toString();
+      const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+      if (resetError) {
+        setError(resetError.message);
+        throw resetError;
+      }
+    },
+    async completePasswordSetup(password) {
+      setError("");
+      const { error: updateError } = await supabase.auth.updateUser({ password });
+      if (updateError) {
+        setError(updateError.message);
+        throw updateError;
+      }
+      clearAuthCallbackUrl();
+      setPasswordSetupRequired(false);
+    },
+  }), [error, loading, passwordSetupRequired, profile, session]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

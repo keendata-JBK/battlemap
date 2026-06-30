@@ -43,7 +43,7 @@ import {
 } from "@ant-design/icons";
 import { ChinaBattleMap, EChart } from "./ECharts.jsx";
 import { useAuth } from "./auth/AuthProvider.jsx";
-import { AccountBlockedScreen, AppLoadingScreen, DataErrorScreen, LoginScreen } from "./components/AuthScreens.jsx";
+import { AccountBlockedScreen, AppLoadingScreen, DataErrorScreen, LoginScreen, PasswordSetupScreen } from "./components/AuthScreens.jsx";
 import {
   CATEGORY_META,
   INITIAL_ALERTS,
@@ -1384,8 +1384,9 @@ export function App() {
     setDirectoryUsers((current) => current.map((user) => user.id === userId ? { ...user, status: active ? "启用" : "停用" } : user));
   };
 
+  if (productionMode && auth.passwordSetupRequired && auth.session) return <PasswordSetupScreen onComplete={auth.completePasswordSetup} error={auth.error} />;
   if (productionMode && auth.loading) return <AppLoadingScreen />;
-  if (productionMode && !auth.session) return <LoginScreen onSignIn={auth.signIn} error={auth.error} />;
+  if (productionMode && !auth.session) return <LoginScreen onSignIn={auth.signIn} onRequestPasswordReset={auth.requestPasswordReset} error={auth.error} />;
   if (productionMode && (auth.error && !auth.profile)) return <DataErrorScreen message={auth.error} onRetry={() => window.location.reload()} onSignOut={auth.signOut} />;
   if (productionMode && !auth.profile) return <AppLoadingScreen />;
   if (productionMode && !auth.profile.active) return <AccountBlockedScreen onSignOut={auth.signOut} />;

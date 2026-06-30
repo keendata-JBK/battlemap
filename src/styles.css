@@ -172,6 +172,31 @@ body {
   font-size: 12px;
 }
 
+.auth-success {
+  margin: -4px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #b9e5d4;
+  border-radius: 7px;
+  background: #eefaf5;
+  color: #117353;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.auth-form-options {
+  display: flex;
+  justify-content: center;
+}
+
+.auth-form-options button {
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: #1263c9;
+  cursor: pointer;
+  font-size: 12px;
+}
+
 .auth-card--loading,
 .auth-card--blocked {
   display: grid;
