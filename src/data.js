@@ -15,6 +15,8 @@ export const STAGES = [
   { key: "won", label: "赢单", probability: 100 },
 ];
 
+export const BUSINESS_REGIONS = ["华东区域", "西南区域", "北京区域"];
+
 export const ROLE_PRESETS = {
   admin: { label: "管理员视角", scope: "全部数据" },
   presales: { label: "售前视角", scope: "全部数据" },
