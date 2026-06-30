@@ -39,7 +39,9 @@ function mapProject(row) {
     expectedClose: row.expected_close || "",
     source: row.source || "",
     updatedAt: formatDateTime(row.updated_at),
-    risk: row.risk || "暂无重大风险",
+    risk: row.risk || "未填写",
+    createdAt: row.created_at,
+    updatedAtIso: row.updated_at,
   };
 }
 
@@ -52,6 +54,36 @@ function mapAlert(row) {
     description: row.description || "",
     time: new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(row.created_at)),
     status: row.status,
+    createdAt: row.created_at,
+    resolvedAt: row.resolved_at,
+  };
+}
+
+function mapImportJob(row) {
+  return {
+    id: row.id,
+    file: row.file_name,
+    createdBy: row.created_by,
+    rows: row.total_rows,
+    success: row.success_rows,
+    failed: row.failed_rows,
+    status: row.status,
+    errors: row.error_report ?? [],
+    createdAt: row.created_at,
+    completedAt: row.completed_at,
+  };
+}
+
+function mapAuditLog(row) {
+  return {
+    id: row.id,
+    table: row.table_name,
+    recordId: row.record_id,
+    action: row.action,
+    actorId: row.actor_id,
+    oldData: row.old_data,
+    newData: row.new_data,
+    createdAt: row.created_at,
   };
 }
 
@@ -79,7 +111,7 @@ function toProjectPayload(form, customerId, ownerId, presalesId, currentUserId) 
     next_action_date: form.nextActionDate || null,
     expected_close: form.expectedClose || null,
     source: form.source || "手工录入",
-    risk: form.risk || "暂无重大风险",
+    risk: form.risk || null,
     created_by: currentUserId,
   };
 }
@@ -134,13 +166,44 @@ async function savePrimaryContact(form, customerId, ownerId, currentUserId) {
 }
 
 export async function loadBackendData() {
-  const [{ data: projectRows, error: projectError }, { data: alertRows, error: alertError }] = await Promise.all([
+  const [
+    { data: projectRows, error: projectError },
+    { data: alertRows, error: alertError },
+    { data: contactRows, error: contactError },
+    { data: customerRows, error: customerError },
+    { data: importRows, error: importError },
+    { data: auditRows, error: auditError },
+  ] = await Promise.all([
     supabase.from("project_dashboard").select("*").order("updated_at", { ascending: false }),
     supabase.from("alerts").select("*").order("created_at", { ascending: false }),
+    supabase.from("contacts").select("customer_id,mobile,email").is("deleted_at", null),
+    supabase.from("customers").select("id,name,unified_credit_code,updated_at").is("deleted_at", null),
+    supabase.from("import_jobs").select("*").order("created_at", { ascending: false }).limit(100),
+    supabase.from("audit_logs").select("id,table_name,record_id,action,old_data,new_data,actor_id,created_at").order("created_at", { ascending: false }).limit(200),
   ]);
   if (projectError) throw projectError;
   if (alertError) throw alertError;
-  return { projects: projectRows.map(mapProject), alerts: alertRows.map(mapAlert) };
+  if (contactError) throw contactError;
+  if (customerError) throw customerError;
+  if (importError) throw importError;
+  if (auditError) throw auditError;
+
+  const customerIdsWithValidContact = new Set(
+    contactRows
+      .filter((contact) => contact.mobile?.trim() || contact.email?.trim())
+      .map((contact) => contact.customer_id),
+  );
+  const projects = projectRows.map((row) => ({
+    ...mapProject(row),
+    hasValidContact: customerIdsWithValidContact.has(row.customer_id),
+  }));
+  return {
+    projects,
+    alerts: alertRows.map(mapAlert),
+    customers: customerRows,
+    importJobs: importRows.map(mapImportJob),
+    auditLogs: auditRows.map(mapAuditLog),
+  };
 }
 
 export async function saveBackendProject(form, existingProject, currentUserId) {
@@ -159,6 +222,20 @@ export async function saveBackendProject(form, existingProject, currentUserId) {
 
   const { data: row, error: reloadError } = await supabase.from("project_dashboard").select("*").eq("id", data.id).single();
   if (reloadError) throw reloadError;
+  const activityContent = existingProject
+    ? existingProject.stage !== form.stage
+      ? `销售阶段由“${existingProject.stage}”变更为“${form.stage}”`
+      : `更新项目资料${form.nextAction ? `，下一步动作：${form.nextAction}` : ""}`
+    : `创建项目${form.nextAction ? `，下一步动作：${form.nextAction}` : ""}`;
+  const { error: activityError } = await supabase.from("project_activities").insert({
+    project_id: data.id,
+    activity_type: existingProject && existingProject.stage !== form.stage ? "stage_change" : "note",
+    content: activityContent,
+    next_action: form.nextAction || null,
+    next_action_date: form.nextActionDate || null,
+    created_by: currentUserId,
+  });
+  if (activityError) throw activityError;
   return mapProject(row);
 }
 
@@ -167,10 +244,45 @@ export async function softDeleteBackendProjects(ids) {
   if (error) throw error;
 }
 
-export async function importBackendProjects(rows) {
-  const { error } = await supabase.rpc("import_projects", { payload: rows });
-  if (error) throw error;
+export async function importBackendProjects(rows, { fileName, currentUserId }) {
+  const { data: job, error: createJobError } = await supabase.from("import_jobs").insert({
+    file_name: fileName || "未命名导入.csv",
+    total_rows: rows.length,
+    status: "validating",
+    created_by: currentUserId,
+  }).select("id").single();
+  if (createJobError) throw createJobError;
+
+  const { data: importedRows, error } = await supabase.rpc("import_projects", { payload: rows });
+  if (error) {
+    await supabase.from("import_jobs").update({
+      failed_rows: rows.length,
+      status: "failed",
+      error_report: [{ message: error.message }],
+      completed_at: new Date().toISOString(),
+    }).eq("id", job.id);
+    throw error;
+  }
+
+  const successRows = importedRows?.length ?? rows.length;
+  const { error: completeJobError } = await supabase.from("import_jobs").update({
+    success_rows: successRows,
+    failed_rows: Math.max(rows.length - successRows, 0),
+    status: successRows === rows.length ? "completed" : "partial",
+    completed_at: new Date().toISOString(),
+  }).eq("id", job.id);
+  if (completeJobError) throw completeJobError;
   return loadBackendData();
+}
+
+export async function loadProjectActivities(projectId) {
+  const { data, error } = await supabase
+    .from("project_activities")
+    .select("id,activity_type,content,occurred_at,next_action,next_action_date,created_by")
+    .eq("project_id", projectId)
+    .order("occurred_at", { ascending: false });
+  if (error) throw error;
+  return data;
 }
 
 export async function updateBackendAlerts(nextAlerts, previousAlerts) {

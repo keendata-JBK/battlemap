@@ -134,7 +134,7 @@ export function DataErrorScreen({ message, onRetry, onSignOut }) {
         <SafetyCertificateOutlined />
         <h1>数据服务连接失败</h1>
         <p>{message || "请检查后端配置与网络状态。"}</p>
-        <div className="auth-card__actions"><button type="button" onClick={onRetry}>重新连接</button><button type="button" className="is-secondary" onClick={onSignOut}>退出登录</button></div>
+        <div className="auth-card__actions">{onRetry && <button type="button" onClick={onRetry}>重新连接</button>}{onSignOut && <button type="button" className="is-secondary" onClick={onSignOut}>退出登录</button>}</div>
       </section>
     </main>
   );

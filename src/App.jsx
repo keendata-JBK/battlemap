@@ -47,12 +47,8 @@ import { useAuth } from "./auth/AuthProvider.jsx";
 import { AccountBlockedScreen, AppLoadingScreen, DataErrorScreen, LoginScreen, PasswordSetupScreen } from "./components/AuthScreens.jsx";
 import {
   CATEGORY_META,
-  INITIAL_ALERTS,
-  INITIAL_PROJECTS,
   ROLE_PRESETS,
-  SAVED_VIEWS,
   STAGES,
-  USERS,
 } from "./data.js";
 import {
   buildDrillPath,
@@ -68,6 +64,7 @@ import {
   createBackendUser,
   loadBackendData,
   loadDirectory,
+  loadProjectActivities,
   importBackendProjects,
   saveBackendProject,
   setBackendUserActive,
@@ -81,7 +78,7 @@ const NAV_ITEMS = [
   { key: "workbench", label: "数据工作台", icon: AppstoreOutlined },
   { key: "analysis", label: "BI 分析", icon: BarChartOutlined },
   { key: "management", label: "数据管理", icon: DatabaseOutlined },
-  { key: "alerts", label: "提醒中心", icon: BellOutlined, badge: 12 },
+  { key: "alerts", label: "提醒中心", icon: BellOutlined },
   { key: "system", label: "系统管理", icon: SettingOutlined },
 ];
 
@@ -92,25 +89,41 @@ const HEALTH_META = {
   gray: { label: "暂停", color: "#8a98ac" },
 };
 
-function usePersistentState(key, initialValue) {
-  const [value, setValue] = useState(() => {
-    try {
-      const raw = window.localStorage.getItem(key);
-      return raw ? JSON.parse(raw) : initialValue;
-    } catch {
-      return initialValue;
-    }
-  });
-
-  useEffect(() => {
-    window.localStorage.setItem(key, JSON.stringify(value));
-  }, [key, value]);
-
-  return [value, setValue];
-}
-
 function formatMoney(value) {
   return new Intl.NumberFormat("zh-CN").format(Math.round(value));
+}
+
+function formatDateTime(value, fallback = "暂无数据") {
+  if (!value) return fallback;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return fallback;
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date).replaceAll("/", "-");
+}
+
+function isSameLocalDay(value, reference = new Date()) {
+  if (!value) return false;
+  const date = new Date(value);
+  return date.getFullYear() === reference.getFullYear()
+    && date.getMonth() === reference.getMonth()
+    && date.getDate() === reference.getDate();
+}
+
+function isInCurrentWeek(value, reference = new Date()) {
+  if (!value) return false;
+  const start = new Date(reference);
+  const weekday = (start.getDay() + 6) % 7;
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - weekday);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 7);
+  const date = new Date(value);
+  return date >= start && date < end;
 }
 
 function formatProjectLocation(project) {
@@ -231,7 +244,7 @@ function Modal({ title, children, onClose, width = 620 }) {
 
 function Sidebar({ activePage, setActivePage, roleKey, setRoleKey, alertsCount, collapsed, setCollapsed, currentUser, productionMode, onSignOut }) {
   const [profileOpen, setProfileOpen] = useState(false);
-  const currentRole = { ...ROLE_PRESETS[roleKey], user: currentUser?.display_name ?? ROLE_PRESETS[roleKey].user };
+  const currentRole = { ...ROLE_PRESETS[roleKey], user: currentUser?.display_name ?? "用户" };
 
   return (
     <aside className={`sidebar ${collapsed ? "sidebar--collapsed" : ""}`}>
@@ -244,7 +257,7 @@ function Sidebar({ activePage, setActivePage, roleKey, setRoleKey, alertsCount, 
       <nav className="sidebar__nav" aria-label="主导航">
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon;
-          const badge = item.key === "alerts" ? alertsCount : item.badge;
+          const badge = item.key === "alerts" ? alertsCount : 0;
           return (
             <button
               className={activePage === item.key ? "is-active" : ""}
@@ -322,10 +335,10 @@ function MapCommandPanel({
   projects,
   layers,
   setLayers,
-  savedView,
-  setSavedView,
   alerts,
   onSelectAlert,
+  onOpenAlerts,
+  onRefresh,
   dataUpdatedAt,
 }) {
   const activeProjects = projects.filter((project) => project.stage !== "won");
@@ -333,6 +346,11 @@ function MapCommandPanel({
   const expected = projects.reduce((sum, project) => sum + project.amount * (getStage(project.stage).probability / 100), 0);
   const won = projects.filter((project) => project.stage === "won").length;
   const winRate = projects.length ? Math.round((won / projects.length) * 100) : 0;
+  const now = new Date();
+  const monthNew = projects.filter((project) => {
+    const createdAt = new Date(project.createdAt);
+    return createdAt.getFullYear() === now.getFullYear() && createdAt.getMonth() === now.getMonth();
+  }).length;
 
   return (
     <aside className="command-panel">
@@ -341,15 +359,15 @@ function MapCommandPanel({
           <h1>营销作战总览</h1>
           <p>数据截至：{dataUpdatedAt}</p>
         </div>
-        <ReloadOutlined title="刷新数据" />
+        <button type="button" className="icon-button" aria-label="刷新数据" title="刷新数据" onClick={onRefresh}><ReloadOutlined /></button>
       </div>
       <div className="metric-grid">
-        <Metric label="项目总数" value={projects.length} trend="18%" />
-        <Metric label="预计成交（万元）" value={formatMoney(expected)} trend="22%" />
-        <Metric label="本月新增项目" value={Math.min(8, projects.length)} trend="26%" />
+        <Metric label="项目总数" value={projects.length} />
+        <Metric label="预计成交（万元）" value={formatMoney(expected)} />
+        <Metric label="本月新增项目" value={monthNew} />
         <Metric label="推进中项目" value={activeProjects.length} />
-        <Metric label="高价值项目（≥500万）" value={highValue} trend="15%" />
-        <Metric label="赢单率（近90天）" value={winRate} suffix="%" trend="3pp" />
+        <Metric label="高价值项目（≥500万）" value={highValue} />
+        <Metric label="当前项目赢单率" value={winRate} suffix="%" />
       </div>
 
       <section className="command-section">
@@ -379,34 +397,13 @@ function MapCommandPanel({
         </div>
       </section>
 
-      <section className="command-section command-section--views">
-        <header>
-          <h2>我的视图</h2>
-          <button type="button">管理</button>
-        </header>
-        <div className="saved-view-list">
-          {SAVED_VIEWS.map((view) => (
-            <button
-              type="button"
-              key={view.id}
-              className={savedView === view.id ? "is-selected" : ""}
-              onClick={() => setSavedView(savedView === view.id ? null : view.id)}
-            >
-              <span>★</span>
-              <em>{view.name}</em>
-              <time>{view.date.slice(5)}</time>
-            </button>
-          ))}
-        </div>
-      </section>
-
       <section className="command-section command-section--alerts">
         <header>
           <h2>待处理提醒</h2>
-          <button type="button">全部查看（{alerts.filter((alert) => alert.status === "待处理").length}）</button>
+          <button type="button" onClick={onOpenAlerts}>全部查看（{alerts.filter((alert) => alert.status === "待处理").length}）</button>
         </header>
         <div className="mini-alert-list">
-          {alerts.slice(0, 3).map((alert) => (
+          {alerts.filter((alert) => alert.status === "待处理").slice(0, 3).map((alert) => (
             <button type="button" key={alert.id} onClick={() => onSelectAlert(alert)}>
               <i className={`alert-dot alert-dot--${alert.level}`}>
                 {alert.level === "red" ? <WarningFilled /> : <InfoCircleOutlined />}
@@ -456,7 +453,7 @@ function ProjectDrawer({ project, onClose, onOpenDetails }) {
         </div>
         <div>
           <dt>下一步动作</dt>
-          <dd>{project.nextAction}（{project.nextActionDate.slice(5)}）</dd>
+          <dd>{project.nextAction || "未填写"}{project.nextActionDate ? `（${project.nextActionDate.slice(5)}）` : ""}</dd>
         </div>
         <div>
           <dt>预计成交</dt>
@@ -499,7 +496,7 @@ function PipelineBar({ projects }) {
   );
 }
 
-function MapToolbar({ search, setSearch, regionMode, setRegionMode, layersOpen, setLayersOpen, filtersOpen, setFiltersOpen, alertsOpen, setAlertsOpen, currentUserName = "用户" }) {
+function MapToolbar({ search, setSearch, regionMode, setRegionMode, layersOpen, setLayersOpen, filtersOpen, setFiltersOpen, alertsOpen, setAlertsOpen, currentUserName = "用户", alertsCount = 0 }) {
   return (
     <div className="map-toolbar">
       <div className="segmented-control">
@@ -522,7 +519,7 @@ function MapToolbar({ search, setSearch, regionMode, setRegionMode, layersOpen, 
       <div className="map-toolbar__profile">
         <button type="button" onClick={() => setAlertsOpen((value) => !value)} aria-label="打开通知">
           <BellOutlined />
-          <b>12</b>
+          {alertsCount > 0 && <b>{alertsCount}</b>}
         </button>
         <span className="avatar avatar--small">{currentUserName.slice(0, 1)}</span>
         <strong>{currentUserName}</strong>
@@ -532,7 +529,7 @@ function MapToolbar({ search, setSearch, regionMode, setRegionMode, layersOpen, 
   );
 }
 
-function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToProject, roleKey, currentUserName }) {
+function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToProject, onOpenAlerts, onRefresh, roleKey, currentUserName }) {
   const [layers, setLayers] = useState(Object.fromEntries(Object.keys(CATEGORY_META).map((key) => [key, true])));
   const [search, setSearch] = useState("");
   const [regionMode, setRegionMode] = useState("全国");
@@ -541,7 +538,6 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
   const [mapLoading, setMapLoading] = useState(true);
   const [mapError, setMapError] = useState("");
   const [mapReloadToken, setMapReloadToken] = useState(0);
-  const [savedView, setSavedView] = useState(null);
   const [layersOpen, setLayersOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
@@ -581,16 +577,13 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
     }
     if (regionFilter !== "全部区域") rows = rows.filter((project) => project.region === regionFilter);
     if (healthFilter !== "全部健康度") rows = rows.filter((project) => project.health === healthFilter);
-    if (savedView) {
-      const view = SAVED_VIEWS.find((item) => item.id === savedView);
-      if (view?.filter.region) rows = rows.filter((project) => project.region === view.filter.region);
-      if (view?.filter.priority) rows = rows.filter((project) => project.priority === view.filter.priority);
-      if (view?.filter.health) rows = rows.filter((project) => project.health === view.filter.health);
-      if (view?.filter.category) rows = rows.filter((project) => project.category === view.filter.category);
-      if (view?.filter.minAmount) rows = rows.filter((project) => project.amount >= view.filter.minAmount);
-    }
     return rows;
-  }, [projects, layers, search, regionMode, drillPath, regionFilter, healthFilter, savedView]);
+  }, [projects, layers, search, regionMode, drillPath, regionFilter, healthFilter]);
+
+  const latestUpdate = projects.reduce((latest, project) => {
+    const timestamp = new Date(project.updatedAtIso || 0).getTime();
+    return timestamp > latest ? timestamp : latest;
+  }, 0);
 
   const selectedProject = filteredProjects.find((project) => project.id === selectedProjectId);
   const currentMapLevel = drillPath.at(-1)?.level ?? (regionMode === "全国" ? "country" : "region");
@@ -656,11 +649,11 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
         projects={projects}
         layers={layers}
         setLayers={setLayers}
-        savedView={savedView}
-        setSavedView={setSavedView}
         alerts={alerts}
-        dataUpdatedAt="2026-06-29 14:40"
+        dataUpdatedAt={latestUpdate ? formatDateTime(latestUpdate) : "暂无项目数据"}
         onSelectAlert={(alert) => onSelectProject(alert.projectId)}
+        onOpenAlerts={onOpenAlerts}
+        onRefresh={onRefresh}
       />
       <main className="map-stage">
         <MapToolbar
@@ -675,6 +668,7 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
           alertsOpen={alertsOpen}
           setAlertsOpen={setAlertsOpen}
           currentUserName={currentUserName}
+          alertsCount={alerts.filter((alert) => alert.status === "待处理").length}
         />
         <div className="map-breadcrumb">
           <button type="button" onClick={() => changeRegion("全国")}>中国</button>
@@ -762,9 +756,10 @@ function PageHeader({ eyebrow, title, description, actions }) {
   );
 }
 
-function ProjectForm({ initialProject, onSubmit, onCancel, users = USERS, saving = false }) {
+function ProjectForm({ initialProject, onSubmit, onCancel, users = [], saving = false, roleKey, currentUserId }) {
   const salesUsers = users.filter((user) => user.roleKey === "sales" || user.role === "销售" || user.role === "销售经理");
-  const ownerUsers = salesUsers.length ? salesUsers : users;
+  const scopedSalesUsers = roleKey === "sales" ? salesUsers.filter((user) => user.id === currentUserId) : salesUsers;
+  const ownerUsers = scopedSalesUsers.length ? scopedSalesUsers : salesUsers.length ? salesUsers : users;
   const defaultOwner = ownerUsers[0]?.name ?? "";
   const defaultPresales = users.find((user) => user.roleKey === "presales" || user.role === "售前")?.name ?? "";
   const [form, setForm] = useState(() => initialProject ? {
@@ -779,22 +774,22 @@ function ProjectForm({ initialProject, onSubmit, onCancel, users = USERS, saving
     contactEmail: "",
     category: "government",
     region: "华东区域",
-    province: "浙江",
-    city: "杭州",
-    district: "滨江区",
-    adcode: "330108",
-    coordinates: [120.19, 30.19],
-    amount: 1000,
+    province: "",
+    city: "",
+    district: "",
+    adcode: "",
+    coordinates: ["", ""],
+    amount: 0,
     stage: "lead",
     owner: defaultOwner,
     presales: defaultPresales,
     health: "green",
     priority: "P2",
-    nextAction: "首次拜访",
-    nextActionDate: "2026-07-05",
-    expectedClose: "2026-12-31",
+    nextAction: "",
+    nextActionDate: "",
+    expectedClose: "",
     source: "手工录入",
-    risk: "暂无重大风险",
+    risk: "",
   });
   const [locating, setLocating] = useState(false);
   const [locationMessage, setLocationMessage] = useState("");
@@ -846,6 +841,8 @@ function ProjectForm({ initialProject, onSubmit, onCancel, users = USERS, saving
         <label className="span-2">下一步动作<input value={form.nextAction} onChange={(event) => update("nextAction", event.target.value)} /></label>
         <label>计划日期<input type="date" value={form.nextActionDate} onChange={(event) => update("nextActionDate", event.target.value)} /></label>
         <label>预计成交<input type="date" value={form.expectedClose} onChange={(event) => update("expectedClose", event.target.value)} /></label>
+        <label>数据来源<input value={form.source} onChange={(event) => update("source", event.target.value)} placeholder="例如：手工录入、客户转介绍" /></label>
+        <label className="span-2">风险说明<input value={form.risk} onChange={(event) => update("risk", event.target.value)} placeholder="如无已识别风险可留空" /></label>
       </div>
       <footer className="modal__footer">
         <GhostButton onClick={onCancel}>取消</GhostButton>
@@ -855,7 +852,44 @@ function ProjectForm({ initialProject, onSubmit, onCancel, users = USERS, saving
   );
 }
 
-function DetailModal({ project, onClose, onEdit }) {
+function ProjectActivityTimeline({ projectId, users }) {
+  const [activities, setActivities] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    loadProjectActivities(projectId)
+      .then((rows) => {
+        if (!active) return;
+        setActivities(rows);
+        setError("");
+      })
+      .catch((activityError) => {
+        if (!active) return;
+        setError(activityError.message || "推进记录加载失败");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => { active = false; };
+  }, [projectId]);
+
+  if (loading) return <p><LoadingOutlined spin /> 正在加载推进记录</p>;
+  if (error) return <p className="danger-text">{error}</p>;
+  if (!activities.length) return <p>暂无推进记录；后续项目更新会自动写入数据库。</p>;
+  return (
+    <ol>
+      {activities.map((activity) => {
+        const actor = users.find((user) => user.id === activity.created_by)?.name ?? "系统用户";
+        return <li key={activity.id}><b>{formatDateTime(activity.occurred_at)}</b><span>{activity.content}<small>{actor}</small></span></li>;
+      })}
+    </ol>
+  );
+}
+
+function DetailModal({ project, onClose, onEdit, users }) {
   const category = CATEGORY_META[project.category];
   const stage = getStage(project.stage);
   return (
@@ -888,7 +922,7 @@ function DetailModal({ project, onClose, onEdit }) {
         </section>
         <section className="timeline">
           <h4>推进时间线</h4>
-          <ol><li><b>今天</b><span>系统生成项目健康度检查，当前为「{HEALTH_META[project.health].label}」</span></li><li><b>06-28</b><span>{project.owner} 更新下一步动作：{project.nextAction}</span></li><li><b>06-26</b><span>{project.presales} 上传解决方案材料</span></li></ol>
+          <ProjectActivityTimeline projectId={project.id} users={users} />
         </section>
       </div>
       <footer className="modal__footer">
@@ -994,7 +1028,7 @@ function WorkbenchPage({ projects, onCreate, onView, onEdit, onDelete, onBulkDel
 
   return (
     <div className="standard-page">
-      <PageHeader eyebrow="MULTI-DIMENSIONAL WORKBENCH" title="数据工作台" description="像多维表格一样定位、筛选和推进所有营销项目" actions={<><GhostButton><SaveOutlined /> 保存视图</GhostButton><PrimaryButton onClick={onCreate}><PlusOutlined /> 新建项目</PrimaryButton></>} />
+      <PageHeader eyebrow="MULTI-DIMENSIONAL WORKBENCH" title="数据工作台" description="像多维表格一样定位、筛选和推进所有营销项目" actions={<PrimaryButton onClick={onCreate}><PlusOutlined /> 新建项目</PrimaryButton>} />
       <section className="view-strip">
         <div>{[{ key: "table", label: "表格", icon: TableOutlined }, { key: "kanban", label: "阶段看板", icon: AppstoreOutlined }, { key: "calendar", label: "行动日历", icon: CalendarOutlined }].map((item) => { const Icon = item.icon; return <button key={item.key} type="button" className={view === item.key ? "is-active" : ""} onClick={() => setView(item.key)}><Icon />{item.label}</button>; })}</div>
         <span>当前视图：<strong>全部项目作战总表</strong></span>
@@ -1017,21 +1051,30 @@ function AnalysisPage({ projects }) {
   const stageData = STAGES.map((stage) => ({ name: stage.label, value: projects.filter((project) => project.stage === stage.key).length }));
   const ownerNames = [...new Set(projects.map((project) => project.owner))];
   const ownerData = ownerNames.map((owner) => ({ name: owner, value: projects.filter((project) => project.owner === owner).reduce((sum, project) => sum + project.amount, 0) }));
+  const forecastHorizon = [0, 30, 60, 90];
+  const forecastData = forecastHorizon.map((days) => {
+    const deadline = new Date();
+    deadline.setHours(23, 59, 59, 999);
+    deadline.setDate(deadline.getDate() + days);
+    return projects
+      .filter((project) => project.stage !== "won" && project.expectedClose && new Date(project.expectedClose) <= deadline)
+      .reduce((sum, project) => sum + project.amount * getStage(project.stage).probability / 100, 0);
+  });
 
   const commonText = { color: "#526079", fontFamily: "Inter, PingFang SC, sans-serif" };
   const axis = { axisLine: { lineStyle: { color: "#dce4ef" } }, axisLabel: { ...commonText, fontSize: 11 }, axisTick: { show: false }, splitLine: { lineStyle: { color: "#edf1f6" } } };
 
   return (
     <div className="standard-page analysis-page">
-      <PageHeader eyebrow="EXECUTIVE BUSINESS INTELLIGENCE" title="BI 分析" description="统一口径洞察区域、阶段、客户和销售经营表现" actions={<><GhostButton><CalendarOutlined /> 2026 年度</GhostButton><PrimaryButton onClick={() => window.print()}><DownloadOutlined /> 导出经营报告</PrimaryButton></>} />
+      <PageHeader eyebrow="EXECUTIVE BUSINESS INTELLIGENCE" title="BI 分析" description={`统一口径洞察区域、阶段、客户和销售经营表现 · ${new Date().getFullYear()} 年`} actions={<PrimaryButton onClick={() => window.print()}><DownloadOutlined /> 导出经营报告</PrimaryButton>} />
       <div className="analysis-kpis">
-        <Metric label="商机总额（万元）" value={formatMoney(total)} trend="18.6%" />
-        <Metric label="加权管道（万元）" value={formatMoney(weighted)} trend="21.2%" />
-        <Metric label="活跃项目" value={projects.filter((project) => !["won"].includes(project.stage)).length} trend="12.8%" />
-        <Metric label="红色风险" value={highRisk} trend={highRisk ? "需关注" : "0"} inverse />
+        <Metric label="商机总额（万元）" value={formatMoney(total)} />
+        <Metric label="加权管道（万元）" value={formatMoney(weighted)} />
+        <Metric label="活跃项目" value={projects.filter((project) => !["won"].includes(project.stage)).length} />
+        <Metric label="红色风险" value={highRisk} inverse />
       </div>
       <div className="dashboard-grid">
-        <article className="chart-card chart-card--wide"><header><div><p>PIPELINE TREND</p><h2>30 / 60 / 90 天成交预测</h2></div><MoreOutlined /></header><EChart className="chart" ariaLabel="成交预测折线图" option={{ tooltip: { trigger: "axis" }, legend: { right: 8, top: 2, textStyle: commonText }, grid: { left: 48, right: 20, top: 52, bottom: 34 }, xAxis: { type: "category", data: ["当前", "+30 天", "+60 天", "+90 天"], ...axis }, yAxis: { type: "value", ...axis }, series: [{ name: "基准预测", type: "line", data: [weighted * .18, weighted * .42, weighted * .71, weighted], smooth: true, symbolSize: 8, lineStyle: { width: 3, color: "#1677ff" }, itemStyle: { color: "#1677ff" }, areaStyle: { color: "rgba(22,119,255,.08)" } }, { name: "乐观预测", type: "line", data: [weighted * .2, weighted * .5, weighted * .84, weighted * 1.18], smooth: true, lineStyle: { width: 2, type: "dashed", color: "#59a8ff" }, itemStyle: { color: "#59a8ff" } }] }} /></article>
+        <article className="chart-card chart-card--wide"><header><div><p>PIPELINE FORECAST</p><h2>按预计成交日计算的 30 / 60 / 90 天加权管道</h2></div></header><EChart className="chart" ariaLabel="成交预测折线图" option={{ tooltip: { trigger: "axis" }, grid: { left: 48, right: 20, top: 32, bottom: 34 }, xAxis: { type: "category", data: ["已到期", "+30 天", "+60 天", "+90 天"], ...axis }, yAxis: { type: "value", ...axis }, series: [{ name: "加权管道", type: "line", data: forecastData, smooth: true, symbolSize: 8, lineStyle: { width: 3, color: "#1677ff" }, itemStyle: { color: "#1677ff" }, areaStyle: { color: "rgba(22,119,255,.08)" } }] }} /></article>
         <article className="chart-card"><header><div><p>CATEGORY MIX</p><h2>五类资源金额结构</h2></div><PieChartOutlined /></header><EChart className="chart" ariaLabel="资源类型饼图" option={{ tooltip: { trigger: "item" }, legend: { bottom: 0, textStyle: commonText }, series: [{ type: "pie", radius: [52, 82], center: ["50%", "43%"], itemStyle: { borderColor: "#fff", borderWidth: 3 }, label: { formatter: "{b}\n{d}%", ...commonText, fontSize: 10 }, data: categoryData }] }} /></article>
         <article className="chart-card"><header><div><p>REGIONAL PERFORMANCE</p><h2>区域商机金额</h2></div><BarChartOutlined /></header><EChart className="chart" ariaLabel="区域金额柱状图" option={{ tooltip: { trigger: "axis" }, grid: { left: 56, right: 20, top: 20, bottom: 32 }, xAxis: { type: "category", data: regionData.map((item) => item.name), ...axis }, yAxis: { type: "value", ...axis }, series: [{ type: "bar", barWidth: 28, data: regionData.map((item) => ({ value: item.value, itemStyle: { color: item.name === "华东区域" ? "#1677ff" : "#55a6ff", borderRadius: [5, 5, 0, 0] } })) }] }} /></article>
         <article className="chart-card"><header><div><p>SALES FUNNEL</p><h2>项目阶段漏斗</h2></div><ProjectOutlined /></header><EChart className="chart" ariaLabel="销售漏斗图" option={{ tooltip: { trigger: "item" }, series: [{ type: "funnel", left: "12%", top: 18, bottom: 12, width: "76%", sort: "descending", gap: 2, label: { show: true, position: "inside", color: "#fff", formatter: "{b} {c}" }, itemStyle: { borderColor: "#fff", borderWidth: 2 }, color: ["#0f4da8", "#1263c9", "#1677ff", "#3b90ff", "#67aaff", "#8fc1ff"], data: stageData }] }} /></article>
@@ -1069,20 +1112,24 @@ function parseImportCsv(content) {
   const headers = parseCsvLine(lines[0]);
   const categoryMap = Object.fromEntries(Object.entries(CATEGORY_META).map(([key, meta]) => [meta.label, key]));
   const stageMap = Object.fromEntries(STAGES.map((stage) => [stage.label, stage.key]));
+  const healthMap = { 正常: "green", 关注: "yellow", 高风险: "red", 暂停: "gray" };
   return lines.slice(1, 10001).map((line, index) => {
     const values = parseCsvLine(line);
     const source = Object.fromEntries(headers.map((header, headerIndex) => [header, values[headerIndex] ?? ""]));
     const data = {
-      name: source["项目名称"], account: source["客户主体"], contactName: source["关键联系人"] || "", contactMobile: source["联系人手机号"] || "", contactEmail: source["联系人邮箱"] || "", category: categoryMap[source["项目类型"]] ?? source["项目类型"] ?? "government",
-      region: source["经营区域"] || "华东区域", province: source["省份"], city: source["城市"], district: source["区县"], adcode: source["行政区划代码"],
+      name: source["项目名称"], account: source["客户主体"], contactName: source["关键联系人"] || "", contactMobile: source["联系人手机号"] || "", contactEmail: source["联系人邮箱"] || "", category: categoryMap[source["项目类型"]] ?? source["项目类型"],
+      region: source["经营区域"], province: source["省份"], city: source["城市"], district: source["区县"], adcode: source["行政区划代码"],
       coordinates: [Number(source["经度"]), Number(source["纬度"])], amount: Number(source["金额（万元）"] || 0), owner: source["负责人"], presales: source["售前负责人"] || "",
-      stage: stageMap[source["销售阶段"]] ?? source["销售阶段"] ?? "lead", health: "green", priority: source["优先级"] || "P2",
-      nextAction: source["下一步动作"] || "首次跟进", nextActionDate: source["计划日期"] || new Date().toISOString().slice(0, 10), expectedClose: source["预计成交日期"] || "",
-      source: "批量导入", risk: "暂无重大风险",
+      stage: stageMap[source["销售阶段"]] ?? source["销售阶段"], health: (healthMap[source["健康度"]] ?? source["健康度"]) || "green", priority: source["优先级"] || "P2",
+      nextAction: source["下一步动作"] || "", nextActionDate: source["计划日期"] || "", expectedClose: source["预计成交日期"] || "",
+      source: source["数据来源"] || "批量导入", risk: source["风险说明"] || "未填写",
     };
-    const missing = ["name", "account", "province", "city", "district", "adcode", "owner"].filter((key) => !data[key]);
+    const missing = ["name", "account", "category", "region", "province", "city", "district", "adcode", "owner", "stage"].filter((key) => !data[key]);
     if (!/^\d{6}$/.test(data.adcode || "")) missing.push("行政区划代码格式");
-    if (!Number.isFinite(data.coordinates[0]) || !Number.isFinite(data.coordinates[1])) missing.push("地图坐标");
+    if (!Number.isFinite(data.coordinates[0]) || data.coordinates[0] < 73 || data.coordinates[0] > 136 || !Number.isFinite(data.coordinates[1]) || data.coordinates[1] < 3 || data.coordinates[1] > 54) missing.push("地图坐标");
+    if (!Object.hasOwn(CATEGORY_META, data.category)) missing.push("项目类型取值");
+    if (!STAGES.some((stage) => stage.key === data.stage)) missing.push("销售阶段取值");
+    if (!Object.hasOwn(HEALTH_META, data.health)) missing.push("健康度取值");
     return { row: index + 2, data, status: missing.length ? "需修正" : "通过", error: missing.join("、") };
   });
 }
@@ -1111,37 +1158,73 @@ function ImportModal({ onClose, onImport }) {
       </div>
       <footer className="modal__footer">
         <GhostButton onClick={onClose}>取消</GhostButton>
-        {step === "upload" ? <PrimaryButton disabled={!file} onClick={inspect}><FileExcelOutlined /> 开始预检</PrimaryButton> : <PrimaryButton disabled={!preview.length || preview.some((row) => row.status !== "通过") || submitting} onClick={async () => { setSubmitting(true); await onImport(preview.map((row) => row.data)); setSubmitting(false); }}>{submitting ? <><LoadingOutlined spin /> 正在导入</> : <><UploadOutlined /> 确认导入</>}</PrimaryButton>}
+        {step === "upload" ? <PrimaryButton disabled={!file} onClick={inspect}><FileExcelOutlined /> 开始预检</PrimaryButton> : <PrimaryButton disabled={!preview.length || preview.some((row) => row.status !== "通过") || submitting} onClick={async () => { setSubmitting(true); try { await onImport(preview.map((row) => row.data), file?.name); } finally { setSubmitting(false); } }}>{submitting ? <><LoadingOutlined spin /> 正在导入</> : <><UploadOutlined /> 确认导入</>}</PrimaryButton>}
       </footer>
     </Modal>
   );
 }
 
-function ManagementPage({ projects, onCreate, onImportOpen, onToast }) {
-  const projectCount = Math.max(projects.length, 1);
+function ManagementPage({ projects, operations, users, roleKey, onCreate, onImportOpen, onRefresh }) {
+  const [duplicateOpen, setDuplicateOpen] = useState(false);
+  const [auditOpen, setAuditOpen] = useState(false);
+  const projectCount = projects.length;
+  const percentage = (predicate) => projectCount ? Math.round((projects.filter(predicate).length / projectCount) * 100) : 0;
   const quality = {
-    region: Math.round((projects.filter((project) => project.district).length / projectCount) * 100),
-    owner: Math.round((projects.filter((project) => project.owner).length / projectCount) * 100),
-    next: Math.round((projects.filter((project) => project.nextAction).length / projectCount) * 100),
-    contact: projects.length ? 86 : 0,
+    region: percentage((project) => project.district && /^\d{6}$/.test(project.adcode || "")),
+    owner: percentage((project) => Boolean(project.ownerId)),
+    next: percentage((project) => Boolean(project.nextAction && project.nextActionDate)),
+    contact: percentage((project) => project.hasValidContact),
   };
-  const downloadTemplate = () => exportCsv("营销作战地图_导入模板.csv", [{ name: "示例项目", account: "示例客户", contactName: "示例联系人", contactMobile: "", contactEmail: "", category: "政府资源", region: "华东区域", province: "浙江", city: "杭州", district: "滨江区", adcode: "330108", longitude: 120.19, latitude: 30.19, amount: 1000, owner: "张伟", presales: "陈晨", stage: "线索", priority: "P2", nextAction: "首次拜访", nextActionDate: "2026-07-05", expectedClose: "2026-12-31" }], [{ key: "name", label: "项目名称" }, { key: "account", label: "客户主体" }, { key: "contactName", label: "关键联系人" }, { key: "contactMobile", label: "联系人手机号" }, { key: "contactEmail", label: "联系人邮箱" }, { key: "category", label: "项目类型" }, { key: "region", label: "经营区域" }, { key: "province", label: "省份" }, { key: "city", label: "城市" }, { key: "district", label: "区县" }, { key: "adcode", label: "行政区划代码" }, { key: "longitude", label: "经度" }, { key: "latitude", label: "纬度" }, { key: "amount", label: "金额（万元）" }, { key: "owner", label: "负责人" }, { key: "presales", label: "售前负责人" }, { key: "stage", label: "销售阶段" }, { key: "priority", label: "优先级" }, { key: "nextAction", label: "下一步动作" }, { key: "nextActionDate", label: "计划日期" }, { key: "expectedClose", label: "预计成交日期" }]);
-  const sources = [{ name: "手工录入", count: projects.filter((p) => p.source === "手工录入").length, status: "正常", updated: "刚刚" }, { name: "历史 Excel 台账", count: 138, status: "已同步", updated: "今天 10:20" }, { name: "CRM 接口", count: 286, status: "正常", updated: "5 分钟前" }, { name: "伙伴项目清单", count: 42, status: "待复核", updated: "昨天 18:30" }];
-  const history = [{ file: "华东大区项目清单_0628.csv", user: "刘洋", rows: 128, success: 124, failed: 4, time: "06-28 18:30" }, { file: "西南区客户资源补充.csv", user: "李娜", rows: 56, success: 56, failed: 0, time: "06-27 16:10" }, { file: "实施伙伴能力表.csv", user: "王磊", rows: 31, success: 29, failed: 2, time: "06-26 11:40" }];
+  const qualityScore = projectCount ? Math.round(Object.values(quality).reduce((sum, value) => sum + value, 0) / 4) : 0;
+  const highPriorityIssues = projects.filter((project) => ["P0", "P1"].includes(project.priority) && (!project.nextAction || !project.nextActionDate || !project.hasValidContact)).length;
+  const sourceMap = new Map();
+  projects.forEach((project) => {
+    const sourceName = project.source?.trim() || "未标注来源";
+    const current = sourceMap.get(sourceName) ?? { name: sourceName, count: 0, updatedAt: null };
+    current.count += 1;
+    if (!current.updatedAt || new Date(project.updatedAtIso) > new Date(current.updatedAt)) current.updatedAt = project.updatedAtIso;
+    sourceMap.set(sourceName, current);
+  });
+  const sources = [...sourceMap.values()].sort((a, b) => b.count - a.count);
+  const history = operations.importJobs.map((job) => ({
+    ...job,
+    user: users.find((user) => user.id === job.createdBy)?.name ?? "未知用户",
+  }));
+  const duplicateMap = new Map();
+  operations.customers.forEach((customer) => {
+    const normalizedName = customer.name.toLowerCase().replace(/[\s（）()·._-]/g, "");
+    const key = customer.unified_credit_code?.trim() ? `credit:${customer.unified_credit_code.trim()}` : `name:${normalizedName}`;
+    const group = duplicateMap.get(key) ?? [];
+    group.push(customer);
+    duplicateMap.set(key, group);
+  });
+  const duplicateGroups = [...duplicateMap.values()].filter((group) => group.length > 1);
+  const changedFields = (log) => {
+    const keys = new Set([...Object.keys(log.oldData ?? {}), ...Object.keys(log.newData ?? {})]);
+    return [...keys].filter((key) => JSON.stringify(log.oldData?.[key]) !== JSON.stringify(log.newData?.[key])).join("、") || "无字段差异";
+  };
+  const templateHeaders = [{ key: "name", label: "项目名称" }, { key: "account", label: "客户主体" }, { key: "contactName", label: "关键联系人" }, { key: "contactMobile", label: "联系人手机号" }, { key: "contactEmail", label: "联系人邮箱" }, { key: "category", label: "项目类型" }, { key: "region", label: "经营区域" }, { key: "province", label: "省份" }, { key: "city", label: "城市" }, { key: "district", label: "区县" }, { key: "adcode", label: "行政区划代码" }, { key: "longitude", label: "经度" }, { key: "latitude", label: "纬度" }, { key: "amount", label: "金额（万元）" }, { key: "owner", label: "负责人" }, { key: "presales", label: "售前负责人" }, { key: "stage", label: "销售阶段" }, { key: "health", label: "健康度" }, { key: "priority", label: "优先级" }, { key: "nextAction", label: "下一步动作" }, { key: "nextActionDate", label: "计划日期" }, { key: "expectedClose", label: "预计成交日期" }, { key: "source", label: "数据来源" }, { key: "risk", label: "风险说明" }];
+  const downloadTemplate = () => exportCsv("营销作战地图_导入模板.csv", [], templateHeaders);
+  const exportAuditLogs = () => exportCsv("营销作战地图_审计日志.csv", operations.auditLogs.map((log) => ({
+    time: formatDateTime(log.createdAt), table: log.table, record: log.recordId, action: log.action,
+    actor: users.find((user) => user.id === log.actorId)?.name ?? "系统", fields: changedFields(log),
+  })), [{ key: "time", label: "操作时间" }, { key: "table", label: "数据表" }, { key: "record", label: "记录ID" }, { key: "action", label: "操作" }, { key: "actor", label: "操作人" }, { key: "fields", label: "变更字段" }]);
   return (
     <div className="standard-page management-page">
       <PageHeader eyebrow="DATA OPERATIONS & GOVERNANCE" title="数据管理" description="导入、校验、查重、修正并追踪每一次数据变更" actions={<><GhostButton onClick={downloadTemplate}><DownloadOutlined /> 模板下载</GhostButton><PrimaryButton onClick={onImportOpen}><UploadOutlined /> 上传数据</PrimaryButton></>} />
       <section className="management-actions">
         <button type="button" onClick={onCreate}><PlusOutlined /><span><strong>单条新建</strong><small>录入客户、商机和下一步动作</small></span><RightOutlined /></button>
         <button type="button" onClick={onImportOpen}><CloudUploadOutlined /><span><strong>批量导入</strong><small>上传 CSV，预检后再入库</small></span><RightOutlined /></button>
-        <button type="button" onClick={() => onToast("已开始扫描疑似重复记录")}><ApartmentOutlined /><span><strong>查重合并</strong><small>按统一信用代码与标准名称识别</small></span><RightOutlined /></button>
-        <button type="button" onClick={() => onToast("审计日志已导出")}><SafetyCertificateOutlined /><span><strong>审计追溯</strong><small>查看字段旧值、新值与操作人</small></span><RightOutlined /></button>
+        <button type="button" onClick={() => setDuplicateOpen(true)}><ApartmentOutlined /><span><strong>重复检查</strong><small>按统一信用代码与标准名称识别</small></span><RightOutlined /></button>
+        <button type="button" onClick={() => setAuditOpen(true)}><SafetyCertificateOutlined /><span><strong>审计追溯</strong><small>查看数据库字段变更与操作人</small></span><RightOutlined /></button>
       </section>
       <div className="management-grid">
-        <article className="quality-card"><header><div><p>DATA QUALITY</p><h2>数据质量概览</h2></div><strong>94.2<small>分</small></strong></header>{Object.entries({ "区县完整率": quality.region, "负责人完整率": quality.owner, "下一步动作完整率": quality.next, "有效联系人覆盖率": quality.contact }).map(([label, value]) => <div className="quality-row" key={label}><span>{label}</span><b><i style={{ width: `${value}%` }} /></b><strong>{value}%</strong></div>)}<footer><InfoCircleOutlined /> 当前存在 3 条高优先级数据质量问题</footer></article>
-        <article className="source-card"><header><div><p>DATA SOURCES</p><h2>数据源状态</h2></div><GhostButton onClick={() => onToast("数据源状态已刷新")}><ReloadOutlined /> 刷新</GhostButton></header><div>{sources.map((source) => <button type="button" key={source.name}><i className={source.status === "待复核" ? "source-dot source-dot--warning" : "source-dot"} /><span><strong>{source.name}</strong><small>{source.updated}</small></span><em>{source.count} 条</em><b>{source.status}</b></button>)}</div></article>
+        <article className="quality-card"><header><div><p>DATA QUALITY</p><h2>数据质量概览</h2></div><strong>{qualityScore}<small>分</small></strong></header>{Object.entries({ "区县及区划代码完整率": quality.region, "负责人完整率": quality.owner, "下一步动作完整率": quality.next, "有效联系人覆盖率": quality.contact }).map(([label, value]) => <div className="quality-row" key={label}><span>{label}</span><b><i style={{ width: `${value}%` }} /></b><strong>{value}%</strong></div>)}<footer><InfoCircleOutlined /> 当前存在 {highPriorityIssues} 条高优先级数据质量问题</footer></article>
+        <article className="source-card"><header><div><p>DATA SOURCES</p><h2>数据库来源分布</h2></div><GhostButton onClick={onRefresh}><ReloadOutlined /> 刷新</GhostButton></header><div>{sources.map((source) => <button type="button" key={source.name} disabled><i className="source-dot" /><span><strong>{source.name}</strong><small>最近更新 {formatDateTime(source.updatedAt)}</small></span><em>{source.count} 条</em><b>已入库</b></button>)}{!sources.length && <div className="empty-state"><DatabaseOutlined /><strong>暂无项目数据</strong><span>新建或导入项目后将在此显示真实来源</span></div>}</div></article>
       </div>
-      <article className="history-card"><header><div><p>IMPORT HISTORY</p><h2>最近导入任务</h2></div><button type="button" aria-label="更多导入记录"><MoreOutlined /></button></header><table className="data-table"><thead><tr><th>文件名称</th><th>操作人</th><th>总行数</th><th>成功</th><th>失败</th><th>完成时间</th><th>结果</th></tr></thead><tbody>{history.map((item) => <tr key={item.file}><td><FileExcelOutlined /> <strong>{item.file}</strong></td><td>{item.user}</td><td>{item.rows}</td><td className="success-text">{item.success}</td><td className={item.failed ? "danger-text" : ""}>{item.failed}</td><td>{item.time}</td><td><span className={`task-result ${item.failed ? "task-result--warning" : ""}`}>{item.failed ? "部分成功" : "导入成功"}</span></td></tr>)}</tbody></table></article>
+      <article className="history-card"><header><div><p>IMPORT HISTORY</p><h2>最近导入任务</h2></div></header><table className="data-table"><thead><tr><th>文件名称</th><th>操作人</th><th>总行数</th><th>成功</th><th>失败</th><th>完成时间</th><th>结果</th></tr></thead><tbody>{history.map((item) => <tr key={item.id}><td><FileExcelOutlined /> <strong>{item.file}</strong></td><td>{item.user}</td><td>{item.rows}</td><td className="success-text">{item.success}</td><td className={item.failed ? "danger-text" : ""}>{item.failed}</td><td>{formatDateTime(item.completedAt || item.createdAt)}</td><td><span className={`task-result ${item.status !== "completed" ? "task-result--warning" : ""}`}>{{ pending: "等待处理", validating: "校验中", completed: "导入成功", partial: "部分成功", failed: "导入失败" }[item.status] ?? item.status}</span></td></tr>)}{!history.length && <tr><td colSpan="7"><div className="empty-state"><FileExcelOutlined /><strong>暂无导入记录</strong><span>首次批量导入后将自动记录任务结果</span></div></td></tr>}</tbody></table></article>
+      {duplicateOpen && <Modal title="客户重复检查" onClose={() => setDuplicateOpen(false)} width={760}><div className="detail-modal">{duplicateGroups.length ? duplicateGroups.map((group, index) => <section key={`${group[0].id}-${index}`} className="detail-columns"><div><h4>疑似重复组 {index + 1}</h4>{group.map((customer) => <p key={customer.id}>{customer.name}{customer.unified_credit_code ? ` · ${customer.unified_credit_code}` : ""}</p>)}</div></section>) : <div className="empty-state"><CheckCircleFilled /><strong>未发现重复客户</strong><span>已按当前可见客户的统一信用代码和标准化名称完成扫描</span></div>}</div><footer className="modal__footer"><GhostButton onClick={() => setDuplicateOpen(false)}>关闭</GhostButton></footer></Modal>}
+      {auditOpen && <Modal title="数据库审计日志" onClose={() => setAuditOpen(false)} width={900}><div className="table-wrap"><table className="data-table"><thead><tr><th>时间</th><th>数据表</th><th>操作</th><th>操作人</th><th>变更字段</th></tr></thead><tbody>{operations.auditLogs.map((log) => <tr key={log.id}><td>{formatDateTime(log.createdAt)}</td><td>{log.table}</td><td>{log.action}</td><td>{users.find((user) => user.id === log.actorId)?.name ?? "系统"}</td><td>{changedFields(log)}</td></tr>)}{!operations.auditLogs.length && <tr><td colSpan="5"><div className="empty-state"><SafetyCertificateOutlined /><strong>{roleKey === "admin" ? "暂无审计记录" : "仅管理员可查看审计日志"}</strong></div></td></tr>}</tbody></table></div><footer className="modal__footer"><GhostButton onClick={() => setAuditOpen(false)}>关闭</GhostButton>{roleKey === "admin" && operations.auditLogs.length > 0 && <PrimaryButton onClick={exportAuditLogs}><DownloadOutlined /> 导出审计日志</PrimaryButton>}</footer></Modal>}
     </div>
   );
 }
@@ -1149,13 +1232,15 @@ function ManagementPage({ projects, onCreate, onImportOpen, onToast }) {
 function AlertsPage({ alerts, setAlerts, projects, onViewProject }) {
   const [filter, setFilter] = useState("all");
   const filtered = alerts.filter((alert) => filter === "all" || alert.level === filter || alert.status === filter);
-  const resolve = (id) => setAlerts((current) => current.map((alert) => alert.id === id ? { ...alert, status: "已解决" } : alert));
+  const resolve = (id) => setAlerts((current) => current.map((alert) => alert.id === id ? { ...alert, status: "已解决", resolvedAt: new Date().toISOString() } : alert));
+  const todayNew = alerts.filter((alert) => isSameLocalDay(alert.createdAt)).length;
+  const weekResolved = alerts.filter((alert) => alert.status === "已解决" && isInCurrentWeek(alert.resolvedAt)).length;
   return (
     <div className="standard-page alerts-page">
       <PageHeader eyebrow="ALERTS & EXECUTION" title="提醒中心" description="集中处理逾期、停滞、临期和数据质量问题" actions={<PrimaryButton onClick={() => setAlerts((current) => current.map((alert) => ({ ...alert, status: "已确认" })))}><CheckOutlined /> 全部确认</PrimaryButton>} />
-      <div className="alert-summary"><Metric label="待处理" value={alerts.filter((a) => a.status === "待处理").length} inverse /><Metric label="红色风险" value={alerts.filter((a) => a.level === "red").length} inverse /><Metric label="今日新增" value={3} trend="2" /><Metric label="本周已闭环" value={18} trend="28%" /></div>
+      <div className="alert-summary"><Metric label="待处理" value={alerts.filter((a) => a.status === "待处理").length} inverse /><Metric label="红色风险" value={alerts.filter((a) => a.level === "red").length} inverse /><Metric label="今日新增" value={todayNew} /><Metric label="本周已闭环" value={weekResolved} /></div>
       <div className="alert-filter-tabs">{[{ key: "all", label: "全部" }, { key: "待处理", label: "待处理" }, { key: "red", label: "红色风险" }, { key: "yellow", label: "黄色关注" }, { key: "已解决", label: "已解决" }].map((item) => <button key={item.key} type="button" className={filter === item.key ? "is-active" : ""} onClick={() => setFilter(item.key)}>{item.label}</button>)}</div>
-      <div className="alert-list">{filtered.map((alert) => { const project = projects.find((item) => item.id === alert.projectId); return <article key={alert.id}><i className={`alert-icon alert-icon--${alert.level}`}>{alert.level === "red" ? <WarningFilled /> : <InfoCircleOutlined />}</i><div><header><strong>{alert.title}</strong><span className={`task-result ${alert.status === "已解决" ? "" : "task-result--warning"}`}>{alert.status}</span></header><p>{alert.description}</p><small>{project ? `${project.region} · ${project.owner} · ${project.name}` : "系统数据质量任务"} · 今天 {alert.time}</small></div><div className="alert-actions">{project && <GhostButton onClick={() => onViewProject(project)}>查看项目</GhostButton>}{alert.status !== "已解决" && <PrimaryButton onClick={() => resolve(alert.id)}>标记解决</PrimaryButton>}</div></article>; })}</div>
+      <div className="alert-list">{filtered.map((alert) => { const project = projects.find((item) => item.id === alert.projectId); return <article key={alert.id}><i className={`alert-icon alert-icon--${alert.level}`}>{alert.level === "red" ? <WarningFilled /> : <InfoCircleOutlined />}</i><div><header><strong>{alert.title}</strong><span className={`task-result ${alert.status === "已解决" ? "" : "task-result--warning"}`}>{alert.status}</span></header><p>{alert.description}</p><small>{project ? `${project.region} · ${project.owner} · ${project.name}` : "系统数据质量任务"} · {formatDateTime(alert.createdAt)}</small></div><div className="alert-actions">{project && <GhostButton onClick={() => onViewProject(project)}>查看项目</GhostButton>}{alert.status !== "已解决" && <PrimaryButton onClick={() => resolve(alert.id)}>标记解决</PrimaryButton>}</div></article>; })}{!filtered.length && <div className="empty-state"><BellOutlined /><strong>暂无提醒</strong><span>当前筛选条件下没有数据库记录</span></div>}</div>
     </div>
   );
 }
@@ -1195,25 +1280,20 @@ function TemporaryCredentials({ credentials, onClose, onToast }) {
   );
 }
 
-function SystemPage({ roleKey, onToast, initialUsers = USERS, productionMode, onInviteUser, onToggleUser }) {
+function SystemPage({ roleKey, onToast, initialUsers = [], onInviteUser, onToggleUser }) {
   const [tab, setTab] = useState("users");
   const [users, setUsers] = useState(initialUsers);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteSaving, setInviteSaving] = useState(false);
   const [temporaryCredentials, setTemporaryCredentials] = useState(null);
-  const [pipeline, setPipeline] = useState(STAGES.map((stage, index) => ({ ...stage, sla: [3, 7, 14, 10, 7, null][index] })));
-  const [rules, setRules] = useState([{ name: "任务逾期", type: "TASK_OVERDUE", severity: "红色", enabled: true }, { name: "阶段停滞", type: "STAGE_STAGNANT", severity: "黄色", enabled: true }, { name: "预计成交日已过", type: "CLOSE_DATE_PASSED", severity: "红色", enabled: true }, { name: "缺少下一步动作", type: "NO_NEXT_ACTION", severity: "黄色", enabled: true }]);
   useEffect(() => setUsers(initialUsers), [initialUsers]);
   const inviteUser = async (form) => {
     setInviteSaving(true);
     try {
       const result = await onInviteUser(form);
       setInviteOpen(false);
-      if (result?.delivery === "temporary_password") {
-        setTemporaryCredentials({ email: form.email, password: result.temporaryPassword });
-      } else {
-        onToast("用户邀请已发送");
-      }
+      if (result?.delivery === "temporary_password") setTemporaryCredentials({ email: form.email, password: result.temporaryPassword });
+      else onToast("用户邀请已发送");
     } catch (error) {
       onToast(error.message || "用户邀请失败", "error");
     } finally {
@@ -1230,17 +1310,17 @@ function SystemPage({ roleKey, onToast, initialUsers = USERS, productionMode, on
       onToast(error.message || "用户状态更新失败", "error");
     }
   };
-  const tabs = [{ key: "users", label: "用户与团队", icon: TeamOutlined }, { key: "permissions", label: "角色权限", icon: SafetyCertificateOutlined }, { key: "pipeline", label: "销售流程", icon: ProjectOutlined }, { key: "rules", label: "提醒规则", icon: BellOutlined }];
-  if (roleKey !== "admin") return <div className="standard-page"><div className="permission-denied"><SafetyCertificateOutlined /><h1>仅管理员可访问系统管理</h1><p>当前为 {ROLE_PRESETS[roleKey].label}，请切换管理员视角后重试。</p></div></div>;
+  const tabs = [{ key: "users", label: "用户与团队", icon: TeamOutlined }, { key: "permissions", label: "角色权限", icon: SafetyCertificateOutlined }];
+  const permissionRows = [["作战地图", "本人", "全部", "全部"], ["客户与商机", "维护本人", "查看全部", "全部管理"], ["BI 分析", "本人", "全部", "全部"], ["数据导入", "本人数据", "可见数据", "全部管理"], ["系统管理", "无", "无", "全部管理"]];
+  const exportPermissions = () => exportCsv("营销作战地图_权限矩阵.csv", permissionRows.map((row) => ({ module: row[0], sales: row[1], presales: row[2], admin: row[3] })), [{ key: "module", label: "功能模块" }, { key: "sales", label: "销售" }, { key: "presales", label: "售前" }, { key: "admin", label: "管理员" }]);
+  if (roleKey !== "admin") return <div className="standard-page"><div className="permission-denied"><SafetyCertificateOutlined /><h1>仅管理员可访问系统管理</h1><p>当前账号为 {ROLE_PRESETS[roleKey].label}，如需管理用户请联系管理员。</p></div></div>;
   return (
     <div className="standard-page system-page">
-      <PageHeader eyebrow="SYSTEM ADMINISTRATION" title="系统管理" description="管理用户、权限、流程、规则和数据字典" actions={<PrimaryButton onClick={() => onToast("系统配置已保存")}><SaveOutlined /> 保存配置</PrimaryButton>} />
+      <PageHeader eyebrow="SYSTEM ADMINISTRATION" title="系统管理" description="管理真实企业用户并核对数据库权限范围" />
       <div className="system-tabs">{tabs.map((item) => { const Icon = item.icon; return <button key={item.key} type="button" className={tab === item.key ? "is-active" : ""} onClick={() => setTab(item.key)}><Icon />{item.label}</button>; })}</div>
-      {tab === "users" && <article className="settings-card"><header><div><p>USERS & TEAMS</p><h2>组织用户</h2></div><PrimaryButton onClick={() => setInviteOpen(true)}><PlusOutlined /> 添加用户</PrimaryButton></header><table className="data-table"><thead><tr><th>用户</th><th>角色</th><th>团队</th><th>数据范围</th><th>状态</th><th>操作</th></tr></thead><tbody>{users.map((user) => <tr key={user.id}><td><div className="user-cell"><span className="avatar avatar--small">{user.name.slice(0, 1)}</span><strong>{user.name}</strong></div></td><td>{user.role}</td><td>{user.team}</td><td>{user.role === "销售" ? "本人数据" : user.role === "销售经理" ? "团队数据" : "全部数据"}</td><td><span className={`task-result ${user.status === "停用" ? "task-result--muted" : ""}`}>{user.status}</span></td><td><button type="button" className="link-button" onClick={() => toggleUser(user)}>{user.status === "启用" ? "停用" : "启用"}</button></td></tr>)}</tbody></table></article>}
-      {tab === "permissions" && <article className="settings-card"><header><div><p>ROLE-BASED ACCESS</p><h2>角色与数据范围</h2></div><GhostButton onClick={() => onToast("权限矩阵已导出")}><DownloadOutlined /> 导出矩阵</GhostButton></header><table className="permission-table"><thead><tr><th>功能模块</th><th>销售</th><th>销售经理</th><th>售前</th><th>管理员</th></tr></thead><tbody>{[["作战地图", "本人", "团队", "全部", "全部"], ["客户与商机", "维护本人", "维护团队", "查看全部", "全部管理"], ["BI 分析", "本人", "团队", "全部", "全部"], ["数据导入", "本人模板", "团队模板", "只读", "全部管理"], ["系统配置", "无", "无", "无", "全部管理"]].map((row) => <tr key={row[0]}>{row.map((cell, index) => <td key={cell}>{index === 0 ? <strong>{cell}</strong> : <span className={cell === "无" ? "permission-none" : "permission-yes"}>{cell !== "无" && <CheckOutlined />} {cell}</span>}</td>)}</tr>)}</tbody></table></article>}
-      {tab === "pipeline" && <article className="settings-card"><header><div><p>SALES PIPELINE</p><h2>阶段、概率与 SLA</h2></div><GhostButton onClick={() => setPipeline((current) => [...current, { key: `custom-${Date.now()}`, label: "新阶段", probability: 50, sla: 7 }])}><PlusOutlined /> 添加阶段</GhostButton></header><div className="pipeline-settings">{pipeline.map((stage, index) => <div key={stage.key}><b>{index + 1}</b><input value={stage.label} onChange={(event) => setPipeline((current) => current.map((item) => item.key === stage.key ? { ...item, label: event.target.value } : item))} /><label>默认概率<input type="number" value={stage.probability} onChange={(event) => setPipeline((current) => current.map((item) => item.key === stage.key ? { ...item, probability: Number(event.target.value) } : item))} />%</label><label>阶段 SLA<input type="number" value={stage.sla ?? ""} onChange={(event) => setPipeline((current) => current.map((item) => item.key === stage.key ? { ...item, sla: Number(event.target.value) } : item))} />天</label><MoreOutlined /></div>)}</div></article>}
-      {tab === "rules" && <article className="settings-card"><header><div><p>ALERT RULES</p><h2>自动提醒规则</h2></div><GhostButton onClick={() => setRules((current) => [...current, { name: "新提醒规则", type: "CUSTOM", severity: "黄色", enabled: false }])}><PlusOutlined /> 新建规则</GhostButton></header><div className="rule-list">{rules.map((rule, index) => <div key={`${rule.type}-${index}`}><i className={rule.severity === "红色" ? "rule-color rule-color--red" : "rule-color"} /><span><strong>{rule.name}</strong><small>{rule.type}</small></span><em>{rule.severity}</em><label className="switch"><input type="checkbox" checked={rule.enabled} onChange={() => setRules((current) => current.map((item, i) => i === index ? { ...item, enabled: !item.enabled } : item))} /><span /></label></div>)}</div></article>}
-      {inviteOpen && <Modal title={productionMode ? "邀请企业用户" : "添加演示用户"} onClose={() => setInviteOpen(false)} width={520}><UserInviteForm onSubmit={inviteUser} onCancel={() => setInviteOpen(false)} saving={inviteSaving} /></Modal>}
+      {tab === "users" && <article className="settings-card"><header><div><p>USERS & TEAMS</p><h2>组织用户</h2></div><PrimaryButton onClick={() => setInviteOpen(true)}><PlusOutlined /> 添加用户</PrimaryButton></header><table className="data-table"><thead><tr><th>用户</th><th>角色</th><th>团队</th><th>数据范围</th><th>状态</th><th>操作</th></tr></thead><tbody>{users.map((user) => <tr key={user.id}><td><div className="user-cell"><span className="avatar avatar--small">{user.name.slice(0, 1)}</span><strong>{user.name}</strong></div></td><td>{user.role}</td><td>{user.team}</td><td>{user.role === "销售" ? "本人数据" : "全部数据"}</td><td><span className={`task-result ${user.status === "停用" ? "task-result--muted" : ""}`}>{user.status}</span></td><td><button type="button" className="link-button" onClick={() => toggleUser(user)}>{user.status === "启用" ? "停用" : "启用"}</button></td></tr>)}{!users.length && <tr><td colSpan="6"><div className="empty-state"><TeamOutlined /><strong>暂无企业用户</strong></div></td></tr>}</tbody></table></article>}
+      {tab === "permissions" && <article className="settings-card"><header><div><p>ROLE-BASED ACCESS</p><h2>角色与数据库权限范围</h2></div><GhostButton onClick={exportPermissions}><DownloadOutlined /> 导出矩阵</GhostButton></header><table className="permission-table"><thead><tr><th>功能模块</th><th>销售</th><th>售前</th><th>管理员</th></tr></thead><tbody>{permissionRows.map((row) => <tr key={row[0]}>{row.map((cell, index) => <td key={`${row[0]}-${index}`}>{index === 0 ? <strong>{cell}</strong> : <span className={cell === "无" ? "permission-none" : "permission-yes"}>{cell !== "无" && <CheckOutlined />} {cell}</span>}</td>)}</tr>)}</tbody></table></article>}
+      {inviteOpen && <Modal title="邀请企业用户" onClose={() => setInviteOpen(false)} width={520}><UserInviteForm onSubmit={inviteUser} onCancel={() => setInviteOpen(false)} saving={inviteSaving} /></Modal>}
       {temporaryCredentials && <Modal title="临时登录凭据" onClose={() => setTemporaryCredentials(null)} width={520}><TemporaryCredentials credentials={temporaryCredentials} onClose={() => setTemporaryCredentials(null)} onToast={onToast} /></Modal>}
     </div>
   );
@@ -1248,16 +1328,14 @@ function SystemPage({ roleKey, onToast, initialUsers = USERS, productionMode, on
 
 export function App() {
   const auth = useAuth();
-  const [demoProjects, setDemoProjects] = usePersistentState("battlemap-projects", INITIAL_PROJECTS);
-  const [demoAlerts, setDemoAlerts] = usePersistentState("battlemap-alerts", INITIAL_ALERTS);
   const [backendProjects, setBackendProjects] = useState([]);
   const [backendAlerts, setBackendAlerts] = useState([]);
-  const [directoryUsers, setDirectoryUsers] = useState(USERS);
-  const [dataLoading, setDataLoading] = useState(false);
+  const [operations, setOperations] = useState({ customers: [], importJobs: [], auditLogs: [] });
+  const [directoryUsers, setDirectoryUsers] = useState([]);
+  const [dataLoading, setDataLoading] = useState(true);
   const [dataError, setDataError] = useState("");
   const [activePage, setActivePage] = useState("map");
-  const [demoRoleKey, setDemoRoleKey] = useState("admin");
-  const [selectedProjectId, setSelectedProjectId] = useState("P2026001");
+  const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [detailProject, setDetailProject] = useState(null);
   const [editingProject, setEditingProject] = useState(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -1268,44 +1346,43 @@ export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [savingProject, setSavingProject] = useState(false);
 
-  const productionMode = auth.backendConfigured;
-  const projects = productionMode ? backendProjects : demoProjects;
-  const alerts = productionMode ? backendAlerts : demoAlerts;
-  const roleKey = productionMode ? auth.profile?.role ?? "sales" : demoRoleKey;
-  const currentUser = productionMode
-    ? auth.profile
-    : { display_name: ROLE_PRESETS[roleKey].user, email: "演示账号" };
+  const projects = backendProjects;
+  const alerts = backendAlerts;
+  const roleKey = auth.profile?.role ?? "sales";
+  const currentUser = auth.profile;
+
+  const applyBackendData = useCallback((data) => {
+    setBackendProjects(data.projects);
+    setBackendAlerts(data.alerts);
+    setOperations({ customers: data.customers, importJobs: data.importJobs, auditLogs: data.auditLogs });
+  }, []);
 
   const refreshBackendData = useCallback(async () => {
-    if (!productionMode || !auth.session || !auth.profile) return;
+    if (!auth.backendConfigured || !auth.session || !auth.profile) return;
     setDataLoading(true);
     setDataError("");
     try {
       const [data, users] = await Promise.all([loadBackendData(), loadDirectory()]);
-      setBackendProjects(data.projects);
-      setBackendAlerts(data.alerts);
+      applyBackendData(data);
       setDirectoryUsers(users);
     } catch (error) {
       setDataError(error.message || "后端数据加载失败");
     } finally {
       setDataLoading(false);
     }
-  }, [auth.profile, auth.session, productionMode]);
+  }, [applyBackendData, auth.backendConfigured, auth.profile, auth.session]);
 
   useEffect(() => {
     refreshBackendData();
   }, [refreshBackendData]);
 
-  const visibleProjects = useMemo(
-    () => (productionMode || roleKey !== "sales" ? projects : projects.filter((project) => project.owner === ROLE_PRESETS.sales.user)),
-    [productionMode, projects, roleKey],
-  );
+  const visibleProjects = projects;
 
   useEffect(() => {
     if (selectedProjectId && !visibleProjects.some((project) => project.id === selectedProjectId)) {
       setSelectedProjectId(visibleProjects[0]?.id ?? null);
     }
-  }, [roleKey, selectedProjectId, visibleProjects]);
+  }, [selectedProjectId, visibleProjects]);
 
   const notify = (message, type = "success") => setToast({ message, type, id: Date.now() });
 
@@ -1323,17 +1400,8 @@ export function App() {
   const saveProject = async (form) => {
     setSavingProject(true);
     try {
-      if (productionMode) {
-        const saved = await saveBackendProject(form, editingProject, auth.session.user.id);
-        setBackendProjects((current) => editingProject
-          ? current.map((project) => project.id === saved.id ? saved : project)
-          : [saved, ...current]);
-      } else if (editingProject) {
-        setDemoProjects((current) => current.map((project) => project.id === editingProject.id ? { ...project, ...form, updatedAt: "2026-06-29 14:45" } : project));
-      } else {
-        const id = `P${Date.now().toString().slice(-7)}`;
-        setDemoProjects((current) => [{ ...form, id, updatedAt: "2026-06-29 14:45" }, ...current]);
-      }
+      await saveBackendProject(form, editingProject, auth.session.user.id);
+      await refreshBackendData();
       notify(editingProject ? "项目已更新" : "新项目已创建并同步到地图");
       setFormOpen(false);
       setEditingProject(null);
@@ -1348,12 +1416,8 @@ export function App() {
     const ids = bulkDeleteIds.length ? bulkDeleteIds : deleteTarget ? [deleteTarget.id] : [];
     if (!ids.length) return;
     try {
-      if (productionMode) {
-        await softDeleteBackendProjects(ids);
-        setBackendProjects((current) => current.filter((project) => !ids.includes(project.id)));
-      } else {
-        setDemoProjects((current) => current.filter((project) => !ids.includes(project.id)));
-      }
+      await softDeleteBackendProjects(ids);
+      await refreshBackendData();
       notify(ids.length > 1 ? `已移入回收站 ${ids.length} 条记录` : "项目已移入回收站");
       setBulkDeleteIds([]);
       setDeleteTarget(null);
@@ -1365,28 +1429,17 @@ export function App() {
   const applyAlertUpdate = (updater) => {
     const previous = alerts;
     const next = typeof updater === "function" ? updater(previous) : updater;
-    if (productionMode) {
-      setBackendAlerts(next);
-      updateBackendAlerts(next, previous).catch((error) => {
-        setBackendAlerts(previous);
-        notify(error.message || "提醒状态更新失败", "error");
-      });
-    } else {
-      setDemoAlerts(next);
-    }
+    setBackendAlerts(next);
+    updateBackendAlerts(next, previous).catch((error) => {
+      setBackendAlerts(previous);
+      notify(error.message || "提醒状态更新失败", "error");
+    });
   };
 
-  const importRows = async (rows) => {
+  const importRows = async (rows, fileName) => {
     try {
-      if (productionMode) {
-        const data = await importBackendProjects(rows);
-        setBackendProjects(data.projects);
-        setBackendAlerts(data.alerts);
-      } else {
-        const timestamp = Date.now();
-        const imported = rows.map((row, index) => ({ ...row, id: `P${String(timestamp + index).slice(-9)}`, updatedAt: new Date().toLocaleString("zh-CN", { hour12: false }) }));
-        setDemoProjects((current) => [...imported, ...current]);
-      }
+      const data = await importBackendProjects(rows, { fileName, currentUserId: auth.session.user.id });
+      applyBackendData(data);
       setImportOpen(false);
       notify(`已完成 ${rows.length} 条项目数据入库`);
     } catch (error) {
@@ -1395,51 +1448,44 @@ export function App() {
   };
 
   const inviteUser = async (input) => {
-    if (productionMode) {
-      const result = await createBackendUser(input);
-      await refreshBackendData();
-      return result;
-    }
-    setDirectoryUsers((current) => [...current, { id: `demo-${Date.now()}`, name: input.displayName, role: { sales: "销售", presales: "售前", admin: "管理员" }[input.role], roleKey: input.role, team: "未分组", status: "启用" }]);
+    const result = await createBackendUser(input);
+    await refreshBackendData();
+    return result;
   };
 
   const toggleUser = async (userId, active) => {
-    if (productionMode) {
-      await setBackendUserActive(userId, active);
-      await refreshBackendData();
-      return;
-    }
-    setDirectoryUsers((current) => current.map((user) => user.id === userId ? { ...user, status: active ? "启用" : "停用" } : user));
+    await setBackendUserActive(userId, active);
+    await refreshBackendData();
   };
 
-  if (productionMode && (auth.passwordSetupRequired || auth.profile?.password_change_required) && auth.session) return <PasswordSetupScreen onComplete={auth.completePasswordSetup} error={auth.error} forced={Boolean(auth.profile?.password_change_required)} />;
-  if (productionMode && auth.loading) return <AppLoadingScreen />;
-  if (productionMode && !auth.session) return <LoginScreen onSignIn={auth.signIn} onRequestPasswordReset={auth.requestPasswordReset} error={auth.error} />;
-  if (productionMode && (auth.error && !auth.profile)) return <DataErrorScreen message={auth.error} onRetry={() => window.location.reload()} onSignOut={auth.signOut} />;
-  if (productionMode && !auth.profile) return <AppLoadingScreen />;
-  if (productionMode && !auth.profile.active) return <AccountBlockedScreen onSignOut={auth.signOut} />;
-  if (productionMode && dataLoading) return <AppLoadingScreen message="正在加载营销数据" />;
-  if (productionMode && dataError) return <DataErrorScreen message={dataError} onRetry={refreshBackendData} onSignOut={auth.signOut} />;
+  if (!auth.backendConfigured) return <DataErrorScreen message="系统未配置 Supabase 生产环境，已禁止使用本地模拟数据。" onRetry={() => window.location.reload()} />;
+  if ((auth.passwordSetupRequired || auth.profile?.password_change_required) && auth.session) return <PasswordSetupScreen onComplete={auth.completePasswordSetup} error={auth.error} forced={Boolean(auth.profile?.password_change_required)} />;
+  if (auth.loading) return <AppLoadingScreen />;
+  if (!auth.session) return <LoginScreen onSignIn={auth.signIn} onRequestPasswordReset={auth.requestPasswordReset} error={auth.error} />;
+  if (auth.error && !auth.profile) return <DataErrorScreen message={auth.error} onRetry={() => window.location.reload()} onSignOut={auth.signOut} />;
+  if (!auth.profile) return <AppLoadingScreen />;
+  if (!auth.profile.active) return <AccountBlockedScreen onSignOut={auth.signOut} />;
+  if (dataLoading) return <AppLoadingScreen message="正在加载营销数据" />;
+  if (dataError) return <DataErrorScreen message={dataError} onRetry={refreshBackendData} onSignOut={auth.signOut} />;
 
   const page = (() => {
     switch (activePage) {
-      case "map": return <MapPage projects={visibleProjects} alerts={alerts} roleKey={roleKey} currentUserName={currentUser.display_name} selectedProjectId={selectedProjectId} onSelectProject={setSelectedProjectId} onGoToProject={setDetailProject} />;
+      case "map": return <MapPage projects={visibleProjects} alerts={alerts} roleKey={roleKey} currentUserName={currentUser.display_name} selectedProjectId={selectedProjectId} onSelectProject={setSelectedProjectId} onGoToProject={setDetailProject} onOpenAlerts={() => setActivePage("alerts")} onRefresh={refreshBackendData} />;
       case "workbench": return <WorkbenchPage projects={visibleProjects} onCreate={openCreate} onView={setDetailProject} onEdit={openEdit} onDelete={setDeleteTarget} onBulkDelete={setBulkDeleteIds} />;
       case "analysis": return <AnalysisPage projects={visibleProjects} />;
-      case "management": return <ManagementPage projects={visibleProjects} onCreate={openCreate} onImportOpen={() => setImportOpen(true)} onToast={notify} />;
+      case "management": return <ManagementPage projects={visibleProjects} operations={operations} users={directoryUsers} roleKey={roleKey} onCreate={openCreate} onImportOpen={() => setImportOpen(true)} onRefresh={refreshBackendData} />;
       case "alerts": return <AlertsPage alerts={alerts} setAlerts={applyAlertUpdate} projects={visibleProjects} onViewProject={setDetailProject} />;
-      case "system": return <SystemPage roleKey={roleKey} onToast={notify} initialUsers={directoryUsers} productionMode={productionMode} onInviteUser={inviteUser} onToggleUser={toggleUser} />;
+      case "system": return <SystemPage roleKey={roleKey} onToast={notify} initialUsers={directoryUsers} onInviteUser={inviteUser} onToggleUser={toggleUser} />;
       default: return null;
     }
   })();
 
   return (
     <div className={`app-shell app-shell--${activePage}`}>
-      {!productionMode && <div className="demo-mode-banner"><InfoCircleOutlined /> 演示数据模式：配置后端后将自动启用登录、数据库和服务端权限</div>}
-      <Sidebar activePage={activePage} setActivePage={setActivePage} roleKey={roleKey} setRoleKey={setDemoRoleKey} alertsCount={alerts.filter((alert) => alert.status === "待处理").length} collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} currentUser={currentUser} productionMode={productionMode} onSignOut={auth.signOut} />
+      <Sidebar activePage={activePage} setActivePage={setActivePage} roleKey={roleKey} setRoleKey={() => {}} alertsCount={alerts.filter((alert) => alert.status === "待处理").length} collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} currentUser={currentUser} productionMode onSignOut={auth.signOut} />
       <div className="app-content">{page}</div>
-      {detailProject && <DetailModal project={detailProject} onClose={() => setDetailProject(null)} onEdit={openEdit} />}
-      {formOpen && <Modal title={editingProject ? "编辑项目" : "新建项目"} onClose={() => setFormOpen(false)}><ProjectForm initialProject={editingProject} onSubmit={saveProject} onCancel={() => setFormOpen(false)} users={directoryUsers} saving={savingProject} /></Modal>}
+      {detailProject && <DetailModal project={detailProject} onClose={() => setDetailProject(null)} onEdit={openEdit} users={directoryUsers} />}
+      {formOpen && <Modal title={editingProject ? "编辑项目" : "新建项目"} onClose={() => setFormOpen(false)}><ProjectForm initialProject={editingProject} onSubmit={saveProject} onCancel={() => setFormOpen(false)} users={directoryUsers} saving={savingProject} roleKey={roleKey} currentUserId={auth.session.user.id} /></Modal>}
       {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImport={importRows} />}
       {(deleteTarget || bulkDeleteIds.length > 0) && <Modal title="确认移入回收站" onClose={() => { setDeleteTarget(null); setBulkDeleteIds([]); }} width={480}><div className="confirm-dialog"><WarningFilled /><p>记录将从地图、分析和工作台中移除，管理员仍可在回收站恢复。</p></div><footer className="modal__footer"><GhostButton onClick={() => { setDeleteTarget(null); setBulkDeleteIds([]); }}>取消</GhostButton><PrimaryButton className="danger-primary" onClick={confirmDelete}>确认删除</PrimaryButton></footer></Modal>}
       <Toast toast={toast} onClose={() => setToast(null)} />
