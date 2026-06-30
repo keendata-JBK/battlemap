@@ -38,6 +38,22 @@ function normalizeAdcode(value) {
   return String(value ?? "").padStart(6, "0");
 }
 
+function normalizeAdministrativeName(value) {
+  return String(value ?? "")
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/(特别行政区|维吾尔自治区|壮族自治区|回族自治区|自治区|自治州|地区|省|市|盟|区|县)$/u, "");
+}
+
+export function matchAdministrativeFeature(features, inputName, expectedLevels = []) {
+  const target = normalizeAdministrativeName(inputName);
+  if (!target) return null;
+  const candidates = (features ?? []).filter((feature) => !expectedLevels.length || expectedLevels.includes(feature.properties?.level));
+  return candidates.find((feature) => String(feature.properties?.name ?? "").trim() === String(inputName).trim())
+    ?? candidates.find((feature) => normalizeAdministrativeName(feature.properties?.name) === target)
+    ?? null;
+}
+
 function normalizeGeoJson(geoJson) {
   return {
     ...geoJson,
@@ -88,6 +104,45 @@ export async function loadBoundary(adcode = "100000", options = {}) {
     window.clearTimeout(timeout);
     externalSignal?.removeEventListener("abort", onAbort);
   }
+}
+
+export async function resolveAdministrativeLocation({ province, city, district }, boundaryLoader = loadBoundary) {
+  if (!province?.trim() || !district?.trim()) throw new Error("请先填写省份和区县");
+
+  const national = await boundaryLoader("100000", { full: true });
+  const provinceFeature = matchAdministrativeFeature(national.features, province, ["province"]);
+  if (!provinceFeature) throw new Error(`未识别省份“${province}”`);
+  const provinceAdcode = normalizeAdcode(provinceFeature.properties.adcode);
+  const provinceBoundary = await boundaryLoader(provinceAdcode, { full: true });
+
+  let districtFeature = matchAdministrativeFeature(provinceBoundary.features, district, ["district"]);
+  if (!districtFeature) {
+    if (!city?.trim()) throw new Error("非直辖市项目请填写城市");
+    const cityFeature = matchAdministrativeFeature(provinceBoundary.features, city, ["city"]);
+    if (!cityFeature) throw new Error(`未在${provinceFeature.properties.name}找到城市“${city}”`);
+    const cityAdcode = normalizeAdcode(cityFeature.properties.adcode);
+    const cityBoundary = await boundaryLoader(cityAdcode, { full: true });
+    districtFeature = matchAdministrativeFeature(cityBoundary.features, district, ["district"]);
+  }
+
+  if (!districtFeature) throw new Error(`未找到区县“${district}”，请核对省市区名称`);
+  const center = districtFeature.properties.center ?? districtFeature.properties.centroid;
+  if (!Array.isArray(center) || center.length < 2) throw new Error("该区县暂无可用中心坐标");
+  const region = REGION_PROVINCE_CODES.华东.has(provinceAdcode)
+    ? "华东区域"
+    : REGION_PROVINCE_CODES.西南.has(provinceAdcode)
+      ? "西南区域"
+      : null;
+
+  return {
+    adcode: normalizeAdcode(districtFeature.properties.adcode),
+    coordinates: [Number(center[0]), Number(center[1])],
+    region,
+    canonical: {
+      province: provinceFeature.properties.name,
+      district: districtFeature.properties.name,
+    },
+  };
 }
 
 export function createRegionBoundary(nationalGeoJson, regionMode) {

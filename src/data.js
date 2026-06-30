@@ -8,9 +8,9 @@ export const CATEGORY_META = {
 
 export const STAGES = [
   { key: "lead", label: "线索", probability: 5 },
-  { key: "discovery", label: "需求挖掘", probability: 20 },
-  { key: "solution", label: "方案/标书", probability: 50 },
-  { key: "negotiation", label: "商务谈判", probability: 80 },
+  { key: "discovery", label: "商机", probability: 20 },
+  { key: "solution", label: "方案设计", probability: 50 },
+  { key: "negotiation", label: "招投标", probability: 80 },
   { key: "contract", label: "合同签订", probability: 90 },
   { key: "won", label: "赢单", probability: 100 },
 ];

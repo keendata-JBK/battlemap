@@ -59,6 +59,7 @@ import {
   loadBoundary,
   nextDrillItem,
   projectMatchesMapScope,
+  resolveAdministrativeLocation,
 } from "./services/mapService.js";
 import {
   createBackendUser,
@@ -795,20 +796,22 @@ function ProjectForm({ initialProject, onSubmit, onCancel, users = [], saving = 
   const [locationMessage, setLocationMessage] = useState("");
 
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
-  const locateByAdcode = async () => {
-    if (!/^\d{6}$/.test(form.adcode || "")) {
-      setLocationMessage("请输入六位行政区划代码");
-      return;
-    }
+  const updateLocationField = (key, value) => {
+    setForm((current) => ({ ...current, [key]: value, adcode: "", coordinates: ["", ""] }));
+    setLocationMessage("");
+  };
+  const locateByArea = async () => {
     setLocating(true);
     setLocationMessage("");
     try {
-      const boundary = await loadBoundary(form.adcode, { full: false });
-      const properties = boundary.features[0]?.properties;
-      const center = properties?.centroid ?? properties?.center;
-      if (!center) throw new Error("该行政区暂无中心点");
-      update("coordinates", center);
-      setLocationMessage(`已定位：${properties.name}`);
+      const location = await resolveAdministrativeLocation({ province: form.province, city: form.city, district: form.district });
+      setForm((current) => ({
+        ...current,
+        adcode: location.adcode,
+        coordinates: location.coordinates,
+        region: location.region ?? current.region,
+      }));
+      setLocationMessage(`已定位：${location.canonical.district}（${location.adcode}）`);
     } catch (error) {
       setLocationMessage(error.message || "定位失败");
     } finally {
@@ -827,10 +830,10 @@ function ProjectForm({ initialProject, onSubmit, onCancel, users = [], saving = 
         <label>项目类型<select value={form.category} onChange={(event) => update("category", event.target.value)}>{Object.entries(CATEGORY_META).map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}</select></label>
         <label>销售阶段<select value={form.stage} onChange={(event) => update("stage", event.target.value)}>{STAGES.map((stage) => <option key={stage.key} value={stage.key}>{stage.label}</option>)}</select></label>
         <label>经营区域<select value={form.region} onChange={(event) => update("region", event.target.value)}><option>华东区域</option><option>西南区域</option></select></label>
-        <label>省份<input value={form.province} onChange={(event) => update("province", event.target.value)} /></label>
-        <label>城市<input value={form.city} onChange={(event) => update("city", event.target.value)} /></label>
-        <label>区县<input value={form.district} onChange={(event) => update("district", event.target.value)} /></label>
-        <label>行政区划代码<div className="field-with-action"><input required inputMode="numeric" pattern="[0-9]{6}" maxLength="6" value={form.adcode} onChange={(event) => update("adcode", event.target.value.replace(/\D/g, ""))} /><button type="button" onClick={locateByAdcode} disabled={locating}>{locating ? "定位中" : "自动定位"}</button></div>{locationMessage && <small className="field-message">{locationMessage}</small>}</label>
+        <label>省份<input required value={form.province} onChange={(event) => updateLocationField("province", event.target.value)} /></label>
+        <label>城市<input value={form.city} onChange={(event) => updateLocationField("city", event.target.value)} placeholder="直辖市可填写同名城市" /></label>
+        <label>区县<div className="field-with-action"><input required value={form.district} onChange={(event) => updateLocationField("district", event.target.value)} /><button type="button" onClick={locateByArea} disabled={locating}>{locating ? "定位中" : "自动定位"}</button></div>{locationMessage && <small className="field-message">{locationMessage}</small>}</label>
+        <label>行政区划代码<input required readOnly inputMode="numeric" pattern="[0-9]{6}" value={form.adcode} placeholder="自动生成" /></label>
         <label>商机金额（万元）<input type="number" min="0" value={form.amount} onChange={(event) => update("amount", Number(event.target.value))} /></label>
         <label>经度<input required type="number" step="0.000001" min="73" max="136" value={form.coordinates[0]} onChange={(event) => update("coordinates", [Number(event.target.value), form.coordinates[1]])} /></label>
         <label>纬度<input required type="number" step="0.000001" min="3" max="54" value={form.coordinates[1]} onChange={(event) => update("coordinates", [form.coordinates[0], Number(event.target.value)])} /></label>
@@ -1111,7 +1114,12 @@ function parseImportCsv(content) {
   if (lines.length < 2) return [];
   const headers = parseCsvLine(lines[0]);
   const categoryMap = Object.fromEntries(Object.entries(CATEGORY_META).map(([key, meta]) => [meta.label, key]));
-  const stageMap = Object.fromEntries(STAGES.map((stage) => [stage.label, stage.key]));
+  const stageMap = {
+    ...Object.fromEntries(STAGES.map((stage) => [stage.label, stage.key])),
+    需求挖掘: "discovery",
+    "方案/标书": "solution",
+    商务谈判: "negotiation",
+  };
   const healthMap = { 正常: "green", 关注: "yellow", 高风险: "red", 暂停: "gray" };
   return lines.slice(1, 10001).map((line, index) => {
     const values = parseCsvLine(line);
