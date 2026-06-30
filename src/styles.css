@@ -197,6 +197,62 @@ body {
   font-size: 12px;
 }
 
+.credential-handoff {
+  display: grid;
+  gap: 16px;
+}
+
+.credential-handoff__notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #f0cf8d;
+  border-radius: 8px;
+  background: #fff8e8;
+  color: #78510c;
+}
+
+.credential-handoff__notice > .anticon {
+  margin-top: 2px;
+  font-size: 18px;
+}
+
+.credential-handoff__notice span {
+  display: grid;
+  gap: 4px;
+}
+
+.credential-handoff__notice small,
+.credential-handoff > p {
+  color: #7b8799;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.credential-handoff label {
+  display: grid;
+  gap: 7px;
+  color: #445168;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.credential-handoff input {
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid #d8e1ec;
+  border-radius: 7px;
+  background: #f7f9fc;
+  color: #172033;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+}
+
+.credential-handoff > p {
+  margin: 0;
+}
+
 .auth-card--loading,
 .auth-card--blocked {
   display: grid;

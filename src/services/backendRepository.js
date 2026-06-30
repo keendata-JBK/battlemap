@@ -201,11 +201,23 @@ export async function loadDirectory() {
   }));
 }
 
+export async function getFunctionErrorMessage(error) {
+  if (error?.context) {
+    try {
+      const payload = await error.context.json();
+      if (payload?.error) return payload.error;
+    } catch {
+      // Fall back to the client error when the response has no JSON body.
+    }
+  }
+  return error?.message || "服务调用失败";
+}
+
 export async function createBackendUser(input) {
   const { data, error } = await supabase.functions.invoke("admin-users", {
     body: { action: "create", ...input },
   });
-  if (error) throw error;
+  if (error) throw new Error(await getFunctionErrorMessage(error));
   if (data?.error) throw new Error(data.error);
   return data;
 }
@@ -214,7 +226,7 @@ export async function setBackendUserActive(userId, active) {
   const { data, error } = await supabase.functions.invoke("admin-users", {
     body: { action: "set-active", userId, active },
   });
-  if (error) throw error;
+  if (error) throw new Error(await getFunctionErrorMessage(error));
   if (data?.error) throw new Error(data.error);
   return data;
 }

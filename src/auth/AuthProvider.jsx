@@ -42,7 +42,7 @@ export function AuthProvider({ children }) {
     setLoading(true);
     supabase
       .from("profiles")
-      .select("id,email,display_name,role,team_id,region_scope,active")
+      .select("id,email,display_name,role,team_id,region_scope,active,password_change_required")
       .eq("id", session.user.id)
       .single()
       .then(({ data, error: profileError }) => {
@@ -96,6 +96,14 @@ export function AuthProvider({ children }) {
       if (updateError) {
         setError(updateError.message);
         throw updateError;
+      }
+      if (profile?.password_change_required) {
+        const { error: completeError } = await supabase.rpc("complete_password_change");
+        if (completeError) {
+          setError(completeError.message);
+          throw completeError;
+        }
+        setProfile((current) => current ? { ...current, password_change_required: false } : current);
       }
       clearAuthCallbackUrl();
       setPasswordSetupRequired(false);
