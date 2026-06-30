@@ -503,7 +503,7 @@ function MapToolbar({ search, setSearch, regionMode, setRegionMode, layersOpen, 
   return (
     <div className="map-toolbar">
       <div className="segmented-control">
-        {["全国", "华东", "西南", "北京"].map((mode) => (
+        {["全国", "华东", "西南", "北京", "其他"].map((mode) => (
           <button key={mode} type="button" className={regionMode === mode ? "is-active" : ""} onClick={() => setRegionMode(mode)}>{mode}</button>
         ))}
       </div>

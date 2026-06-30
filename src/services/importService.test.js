@@ -13,10 +13,24 @@ describe("parseImportCsv", () => {
     expect(row.data.stage).toBe("discovery");
   });
 
-  it("rejects unsupported regions before writing to the database", () => {
+  it("normalizes other Chinese provinces to other region", () => {
     const csv = `${headers}\n广州项目,广州客户,,,,政府资源,华南区域,广东,广州,天河区,440106,113.3612,23.1247,100,测试用户,,线索,P2,,,`;
+    const [row] = parseImportCsv(csv);
+    expect(row.status).toBe("通过");
+    expect(row.data.region).toBe("其他区域");
+  });
+
+  it("rejects unsupported region values when the adcode cannot be classified", () => {
+    const csv = `${headers}\n未知项目,未知客户,,,,政府资源,华南区域,未知省,未知市,未知区,990106,113.3612,23.1247,100,测试用户,,线索,P2,,,`;
     const [row] = parseImportCsv(csv);
     expect(row.status).toBe("需修正");
     expect(row.error).toContain("经营区域取值");
+  });
+
+  it("accepts Hubei projects categorized as other region", () => {
+    const csv = `${headers}\n武汉项目,武汉客户,,,,产业资源,其他区域,湖北,武汉,武昌区,420106,114.316464,30.55418,300,测试用户,,方案设计,P1,,,`;
+    const [row] = parseImportCsv(csv);
+    expect(row.status).toBe("通过");
+    expect(row.data.region).toBe("其他区域");
   });
 });

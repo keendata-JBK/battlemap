@@ -1,11 +1,14 @@
+import { BUSINESS_REGION_PROVINCE_CODES, inferBusinessRegion } from "../data.js";
+
 const DATAV_BOUNDARY_BASE = "https://geo.datav.aliyun.com/areas_v3/bound";
 const BACKEND_URL = import.meta.env.VITE_SUPABASE_URL?.replace(/\/$/, "");
 const boundaryCache = new Map();
 
 export const REGION_PROVINCE_CODES = {
-  华东: new Set(["310000", "320000", "330000", "340000", "350000", "360000", "370000"]),
-  西南: new Set(["500000", "510000", "520000", "530000", "540000"]),
-  北京: new Set(["110000"]),
+  华东: new Set(BUSINESS_REGION_PROVINCE_CODES.华东区域),
+  西南: new Set(BUSINESS_REGION_PROVINCE_CODES.西南区域),
+  北京: new Set(BUSINESS_REGION_PROVINCE_CODES.北京区域),
+  其他: new Set(BUSINESS_REGION_PROVINCE_CODES.其他区域),
 };
 
 const DRILL_LEVEL_INDEX = {
@@ -129,8 +132,7 @@ export async function resolveAdministrativeLocation({ province, city, district }
   if (!districtFeature) throw new Error(`未找到区县“${district}”，请核对省市区名称`);
   const center = districtFeature.properties.center ?? districtFeature.properties.centroid;
   if (!Array.isArray(center) || center.length < 2) throw new Error("该区县暂无可用中心坐标");
-  const regionKey = Object.entries(REGION_PROVINCE_CODES).find(([, codes]) => codes.has(provinceAdcode))?.[0];
-  const region = regionKey ? `${regionKey}区域` : null;
+  const region = inferBusinessRegion(provinceAdcode);
 
   return {
     adcode: normalizeAdcode(districtFeature.properties.adcode),

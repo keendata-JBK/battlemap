@@ -1,4 +1,4 @@
-import { BUSINESS_REGIONS, CATEGORY_META, STAGES } from "../data.js";
+import { BUSINESS_REGIONS, CATEGORY_META, STAGES, inferBusinessRegion } from "../data.js";
 
 const HEALTH_KEYS = new Set(["green", "yellow", "red", "gray"]);
 
@@ -39,9 +39,10 @@ export function parseImportCsv(content) {
   return lines.slice(1, 10001).map((line, index) => {
     const values = parseCsvLine(line);
     const source = Object.fromEntries(headers.map((header, headerIndex) => [header, values[headerIndex] ?? ""]));
+    const inferredRegion = inferBusinessRegion(source["行政区划代码"]);
     const data = {
       name: source["项目名称"], account: source["客户主体"], contactName: source["关键联系人"] || "", contactMobile: source["联系人手机号"] || "", contactEmail: source["联系人邮箱"] || "", category: categoryMap[source["项目类型"]] ?? source["项目类型"],
-      region: source["经营区域"], province: source["省份"], city: source["城市"], district: source["区县"], adcode: source["行政区划代码"],
+      region: inferredRegion ?? source["经营区域"], province: source["省份"], city: source["城市"], district: source["区县"], adcode: source["行政区划代码"],
       coordinates: [Number(source["经度"]), Number(source["纬度"])], amount: Number(source["金额（万元）"] || 0), owner: source["负责人"], presales: source["售前负责人"] || "",
       stage: stageMap[source["销售阶段"]] ?? source["销售阶段"], health: (healthMap[source["健康度"]] ?? source["健康度"]) || "green", priority: source["优先级"] || "P2",
       nextAction: source["下一步动作"] || "", nextActionDate: source["计划日期"] || "", expectedClose: source["预计成交日期"] || "",

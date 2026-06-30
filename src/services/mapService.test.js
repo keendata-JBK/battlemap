@@ -18,9 +18,11 @@ describe("mapService", () => {
       features: [
         { properties: { adcode: "330000", name: "浙江省" } },
         { properties: { adcode: "510000", name: "四川省" } },
+        { properties: { adcode: "420000", name: "湖北省" } },
       ],
     };
     expect(createRegionBoundary(national, "华东").features.map((feature) => feature.properties.name)).toEqual(["浙江省"]);
+    expect(createRegionBoundary(national, "其他").features.map((feature) => feature.properties.name)).toEqual(["湖北省"]);
   });
 
   it("keeps a valid province-city-district hierarchy", () => {
@@ -93,5 +95,19 @@ describe("mapService", () => {
     );
     expect(result.adcode).toBe("310104");
     expect(result.region).toBe("华东区域");
+  });
+
+  it("classifies Hubei and Hunan projects as other region", async () => {
+    const boundaries = {
+      "100000": { features: [{ properties: { adcode: "420000", name: "湖北省", level: "province" } }] },
+      "420000": { features: [{ properties: { adcode: "420100", name: "武汉市", level: "city" } }] },
+      "420100": { features: [{ properties: { adcode: "420106", name: "武昌区", level: "district", center: [114.316464, 30.55418] } }] },
+    };
+    const result = await resolveAdministrativeLocation(
+      { province: "湖北", city: "武汉", district: "武昌区" },
+      async (adcode) => boundaries[adcode],
+    );
+    expect(result.region).toBe("其他区域");
+    expect(isDrillItemInRegion({ adcode: "430000" }, "其他")).toBe(true);
   });
 });
