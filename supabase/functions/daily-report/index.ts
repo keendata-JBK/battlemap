@@ -32,6 +32,16 @@ function normalizeDate(value: unknown, fallback: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : fallback;
 }
 
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (request.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
@@ -87,22 +97,30 @@ Deno.serve(async (request) => {
 返回结构：
 {"entries":[{"reportDate":"YYYY-MM-DD","salespersonId":"uuid或null","salespersonName":"姓名或空","projectId":"uuid或null","projectName":"项目名或空","activityType":"visit","content":"事实描述","customerContact":"客户联系人或空","matchConfidence":0.95,"matchReason":"匹配依据","rawSegment":"对应原文"}],"warnings":["需要管理员注意的问题"]}`;
 
-  const modelResponse = await fetch(`${gatewayBaseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${gatewayKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "gpt-5.5",
-      store: false,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: `销售目录：\n${JSON.stringify(sales)}\n\n项目目录：\n${JSON.stringify(projects)}\n\n默认日期：${defaultDate}\n\n日报原文：\n${rawText}` },
-      ],
-    }),
-  });
+  let modelResponse;
+  try {
+    modelResponse = await fetchWithTimeout(`${gatewayBaseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${gatewayKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        store: false,
+        reasoning_effort: "low",
+        max_completion_tokens: 4000,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: `销售目录：\n${JSON.stringify(sales)}\n\n项目目录：\n${JSON.stringify(projects)}\n\n默认日期：${defaultDate}\n\n日报原文：\n${rawText}` },
+        ],
+      }),
+    }, 45000);
+  } catch (error) {
+    const timedOut = error instanceof DOMException && error.name === "AbortError";
+    return jsonResponse({ error: timedOut ? "日报识别超过 45 秒，请缩短日报内容后重试" : "日报识别模型连接失败，请稍后重试" }, timedOut ? 504 : 502);
+  }
 
   if (!modelResponse.ok) {
     const message = (await modelResponse.text()).slice(0, 500);

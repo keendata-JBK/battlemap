@@ -3604,6 +3604,26 @@ button:disabled {
 .smart-query-scope strong { color: #344158; font-size: 9px; }
 .smart-query-scope small { color: #8b97a8; font-size: 8px; }
 
+.smart-query-account {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.smart-query-account > button {
+  min-height: 34px;
+  border: 1px solid #dce4ef;
+  border-radius: 6px;
+  padding: 0 10px;
+  background: #fff;
+  color: #68768a;
+  cursor: pointer;
+  font-size: 8px;
+}
+
+.smart-query-account > button:hover { border-color: #8ebeff; color: #1677ff; }
+.smart-query-account > button:disabled { cursor: not-allowed; opacity: .45; }
+
 .smart-query-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.65fr) minmax(250px, .65fr);
@@ -4249,6 +4269,8 @@ button:disabled {
   .smart-query-scope {
     margin-top: 10px;
   }
+
+  .smart-query-account { align-items: stretch; flex-direction: column; }
 
   .weekly-summary-fields {
     grid-template-columns: 1fr;

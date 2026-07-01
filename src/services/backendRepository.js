@@ -304,6 +304,31 @@ export async function askMarketingData(question, history = []) {
   return data;
 }
 
+export async function loadWorkspaceState(stateKey) {
+  const { data, error } = await supabase
+    .from("user_workspace_state")
+    .select("state_data,updated_at")
+    .eq("state_key", stateKey)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? { ...(data.state_data ?? {}), updatedAt: data.updated_at } : null;
+}
+
+export async function saveWorkspaceState(stateKey, stateData, currentUserId) {
+  const { data, error } = await supabase
+    .from("user_workspace_state")
+    .upsert({ user_id: currentUserId, state_key: stateKey, state_data: stateData }, { onConflict: "user_id,state_key" })
+    .select("updated_at")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function clearWorkspaceState(stateKey) {
+  const { error } = await supabase.from("user_workspace_state").delete().eq("state_key", stateKey);
+  if (error) throw error;
+}
+
 export async function analyzeDailyReport(rawText, defaultDate) {
   const { data, error } = await supabase.functions.invoke("daily-report", {
     body: { rawText, defaultDate },

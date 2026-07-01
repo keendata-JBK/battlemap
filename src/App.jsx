@@ -76,15 +76,18 @@ import {
   importDailyReport,
   loadBackendData,
   loadDirectory,
+  loadWorkspaceState,
   loadProjectActivities,
   loadProjectDailyReports,
   importBackendProjects,
   saveBackendProject,
   saveWeeklyUpdate,
+  saveWorkspaceState,
   setBackendUserActive,
   softDeleteBackendProjects,
   updateBackendAlerts,
   updateAlertRule,
+  clearWorkspaceState,
 } from "./services/backendRepository.js";
 import logo from "./assets/keendata-logo.png";
 
@@ -591,6 +594,7 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [regionFilter, setRegionFilter] = useState("全部区域");
   const [healthFilter, setHealthFilter] = useState("全部健康度");
+  const [ownerFilter, setOwnerFilter] = useState("全部销售");
   const [fullScreen, setFullScreen] = useState(false);
   const mapTransitioningRef = useRef(false);
 
@@ -625,8 +629,11 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
     }
     if (regionFilter !== "全部区域") rows = rows.filter((project) => project.region === regionFilter);
     if (healthFilter !== "全部健康度") rows = rows.filter((project) => project.health === healthFilter);
+    if (ownerFilter !== "全部销售") rows = rows.filter((project) => project.ownerId === ownerFilter);
     return rows;
-  }, [projects, layers, search, regionMode, drillPath, regionFilter, healthFilter]);
+  }, [projects, layers, search, regionMode, drillPath, regionFilter, healthFilter, ownerFilter]);
+
+  const ownerOptions = useMemo(() => Array.from(new Map(projects.map((project) => [project.ownerId, project.owner])).entries()).sort((a, b) => a[1].localeCompare(b[1], "zh-CN")), [projects]);
 
   const latestUpdate = projects.reduce((latest, project) => {
     const timestamp = new Date(project.updatedAtIso || 0).getTime();
@@ -773,8 +780,9 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
             <div className="map-popover map-popover--filters">
               <header><strong>组合筛选</strong><button type="button" aria-label="关闭组合筛选" onClick={() => setFiltersOpen(false)}><CloseOutlined /></button></header>
               <label>经营区域<select value={regionFilter} onChange={(event) => setRegionFilter(event.target.value)}><option>全部区域</option>{BUSINESS_REGIONS.map((region) => <option key={region}>{region}</option>)}</select></label>
+              <label>销售负责人<select value={ownerFilter} onChange={(event) => setOwnerFilter(event.target.value)}><option value="全部销售">全部销售</option>{ownerOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label>
               <label>项目健康度<select value={healthFilter} onChange={(event) => setHealthFilter(event.target.value)}><option>全部健康度</option><option value="green">正常</option><option value="yellow">关注</option><option value="red">高风险</option></select></label>
-              <GhostButton onClick={() => { setRegionFilter("全部区域"); setHealthFilter("全部健康度"); }}>重置筛选</GhostButton>
+              <GhostButton onClick={() => { setRegionFilter("全部区域"); setHealthFilter("全部健康度"); setOwnerFilter("全部销售"); }}>重置筛选</GhostButton>
             </div>
           )}
           {alertsOpen && (
@@ -1053,11 +1061,12 @@ function DetailModal({ project, onClose, onEdit, users }) {
   );
 }
 
-function FilterBar({ filters, setFilters, onCreate, onExport, resultCount }) {
+function FilterBar({ filters, setFilters, owners, onCreate, onExport, resultCount }) {
   return (
     <div className="filter-bar">
       <label className="standard-search"><SearchOutlined /><input value={filters.search} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} placeholder="搜索项目、客户、区县" /></label>
       <select value={filters.region} onChange={(event) => setFilters((current) => ({ ...current, region: event.target.value }))}><option>全部区域</option>{BUSINESS_REGIONS.map((region) => <option key={region}>{region}</option>)}</select>
+      <select value={filters.owner} onChange={(event) => setFilters((current) => ({ ...current, owner: event.target.value }))}><option value="all">全部销售</option>{owners.map(([id, name]) => <option value={id} key={id}>{name}</option>)}</select>
       <select value={filters.category} onChange={(event) => setFilters((current) => ({ ...current, category: event.target.value }))}><option value="all">全部类型</option>{Object.entries(CATEGORY_META).map(([key, meta]) => <option value={key} key={key}>{meta.label}</option>)}</select>
       <select value={filters.stage} onChange={(event) => setFilters((current) => ({ ...current, stage: event.target.value }))}><option value="all">全部阶段</option>{STAGES.map((stage) => <option value={stage.key} key={stage.key}>{stage.label}</option>)}</select>
       <span className="filter-result">共 {resultCount} 条</span>
@@ -1238,7 +1247,7 @@ function WeeklyUpdateView({ projects, weeklyUpdates, users, roleKey, currentUser
   );
 }
 
-function DailyReportImportView({ projects, users, importHistory = [], onAnalyze, onImport }) {
+function DailyReportImportView({ projects, users, importHistory = [], onAnalyze, onImport, onLoadDraft, onSaveDraft, onClearDraft }) {
   const salesUsers = users.filter((user) => user.roleKey === "sales");
   const [rawText, setRawText] = useState("");
   const [defaultDate, setDefaultDate] = useState(dateInputValue(new Date()));
@@ -1247,6 +1256,39 @@ function DailyReportImportView({ projects, users, importHistory = [], onAnalyze,
   const [analyzing, setAnalyzing] = useState(false);
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState("");
+  const [draftReady, setDraftReady] = useState(false);
+  const [draftStatus, setDraftStatus] = useState("正在读取账号草稿");
+
+  useEffect(() => {
+    let active = true;
+    onLoadDraft()
+      .then((saved) => {
+        if (!active || !saved) return;
+        setRawText(saved.rawText ?? "");
+        setDefaultDate(saved.defaultDate ?? dateInputValue(new Date()));
+        setEntries(Array.isArray(saved.entries) ? saved.entries : []);
+        setWarnings(Array.isArray(saved.warnings) ? saved.warnings : []);
+        setDraftStatus("已恢复账号草稿");
+      })
+      .catch(() => {
+        if (active) setDraftStatus("草稿读取失败，不影响正式入库");
+      })
+      .finally(() => {
+        if (active) setDraftReady(true);
+      });
+    return () => { active = false; };
+  }, [onLoadDraft]);
+
+  useEffect(() => {
+    if (!draftReady) return undefined;
+    const timer = window.setTimeout(() => {
+      const action = rawText.trim() || entries.length
+        ? onSaveDraft({ rawText, defaultDate, entries, warnings })
+        : onClearDraft();
+      action.then(() => setDraftStatus(rawText.trim() || entries.length ? "草稿已自动保存到当前账号" : "暂无未提交草稿")).catch(() => setDraftStatus("草稿自动保存失败"));
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [defaultDate, draftReady, entries, onClearDraft, onSaveDraft, rawText, warnings]);
 
   const selectedEntries = entries.filter((entry) => entry.selected);
   const readyEntries = selectedEntries.filter((entry) => entry.salespersonId && entry.projectId && entry.content.trim());
@@ -1291,6 +1333,7 @@ function DailyReportImportView({ projects, users, importHistory = [], onAnalyze,
     setError("");
     try {
       await onImport(rawText, defaultDate, readyEntries);
+      await onClearDraft();
       setRawText("");
       setEntries([]);
       setWarnings([]);
@@ -1309,7 +1352,7 @@ function DailyReportImportView({ projects, users, importHistory = [], onAnalyze,
           <div className="daily-import-date"><span>默认日报日期</span><input type="date" value={defaultDate} onChange={(event) => setDefaultDate(event.target.value)} /></div>
         </header>
         <textarea value={rawText} onChange={(event) => setRawText(event.target.value)} placeholder={'可直接粘贴微信群日报、邮件日报或汇总文字。\n例如：\n张三：上午拜访某客户，沟通数据平台方案；下午电话跟进另一项目采购进度。\n李四：与客户召开需求评审会，下一步完善技术方案。'} />
-        <footer><span><SafetyCertificateOutlined /> 日报原文仅用于本次识别和审计追溯</span><PrimaryButton disabled={analyzing || !rawText.trim()} onClick={analyze}>{analyzing ? <LoadingOutlined spin /> : <RobotOutlined />} {analyzing ? "正在识别销售与项目" : "智能识别日报"}</PrimaryButton></footer>
+        <footer><span><SafetyCertificateOutlined /> {draftStatus}</span><PrimaryButton disabled={analyzing || !rawText.trim()} onClick={analyze}>{analyzing ? <LoadingOutlined spin /> : <RobotOutlined />} {analyzing ? "正在识别销售与项目" : "第 1 步：识别并生成候选"}</PrimaryButton></footer>
       </section>
 
       {error && <div className="daily-import-message daily-import-message--error"><WarningFilled /><span>{error}</span></div>}
@@ -1343,7 +1386,7 @@ function DailyReportImportView({ projects, users, importHistory = [], onAnalyze,
                 })}</tbody>
               </table>
             </div>
-            <footer><span>入库后将同步写入项目“日报记录”和“推进时间线”，并进入 BI 智能分析数据集。</span><PrimaryButton disabled={importing || !readyEntries.length} onClick={commit}>{importing ? <LoadingOutlined spin /> : <CheckOutlined />} 确认入库 {readyEntries.length} 条</PrimaryButton></footer>
+            <footer><span>只有点击右侧按钮并收到成功提示，才算正式写入数据库。</span><PrimaryButton disabled={importing || !readyEntries.length} onClick={commit}>{importing ? <LoadingOutlined spin /> : <CheckOutlined />} 第 2 步：确认正式入库 {readyEntries.length} 条</PrimaryButton></footer>
           </section>
         </>
       )}
@@ -1356,14 +1399,16 @@ function DailyReportImportView({ projects, users, importHistory = [], onAnalyze,
   );
 }
 
-function WorkbenchPage({ projects, weeklyUpdates, dailyReportImports, users, roleKey, currentUserId, currentUserName, onSaveWeekly, onAnalyzeDailyReport, onImportDailyReport, onCreate, onView, onEdit, onDelete, onBulkDelete }) {
+function WorkbenchPage({ projects, weeklyUpdates, dailyReportImports, users, roleKey, currentUserId, currentUserName, onSaveWeekly, onAnalyzeDailyReport, onImportDailyReport, onLoadDailyDraft, onSaveDailyDraft, onClearDailyDraft, onCreate, onView, onEdit, onDelete, onBulkDelete }) {
   const [view, setView] = useState("table");
   const [selectedIds, setSelectedIds] = useState([]);
-  const [filters, setFilters] = useState({ search: "", region: "全部区域", category: "all", stage: "all" });
+  const [filters, setFilters] = useState({ search: "", region: "全部区域", owner: "all", category: "all", stage: "all" });
+  const ownerOptions = useMemo(() => Array.from(new Map(projects.map((project) => [project.ownerId, project.owner])).entries()).sort((a, b) => a[1].localeCompare(b[1], "zh-CN")), [projects]);
   const filtered = projects.filter((project) => {
     const keyword = filters.search.trim().toLowerCase();
     if (keyword && ![project.name, project.account, project.city, project.district].join(" ").toLowerCase().includes(keyword)) return false;
     if (filters.region !== "全部区域" && project.region !== filters.region) return false;
+    if (filters.owner !== "all" && project.ownerId !== filters.owner) return false;
     if (filters.category !== "all" && project.category !== filters.category) return false;
     if (filters.stage !== "all" && project.stage !== filters.stage) return false;
     return true;
@@ -1382,21 +1427,46 @@ function WorkbenchPage({ projects, weeklyUpdates, dailyReportImports, users, rol
         <div>{[{ key: "table", label: "表格", icon: TableOutlined }, { key: "kanban", label: "阶段看板", icon: AppstoreOutlined }, { key: "calendar", label: "周行动更新", icon: CalendarOutlined }, ...(roleKey === "admin" ? [{ key: "daily-report", label: "日报导入", icon: FileTextOutlined }] : [])].map((item) => { const Icon = item.icon; return <button key={item.key} type="button" className={view === item.key ? "is-active" : ""} onClick={() => setView(item.key)}><Icon />{item.label}</button>; })}</div>
         <span>当前视图：<strong>{view === "daily-report" ? "销售日报智能导入" : view === "calendar" ? "销售周行动更新" : "全部项目作战总表"}</strong></span>
       </section>
-      {view !== "daily-report" && <FilterBar filters={filters} setFilters={setFilters} onCreate={onCreate} onExport={handleExport} resultCount={filtered.length} />}
+      {view !== "daily-report" && <FilterBar filters={filters} setFilters={setFilters} owners={ownerOptions} onCreate={onCreate} onExport={handleExport} resultCount={filtered.length} />}
       {selectedIds.length > 0 && <div className="bulk-bar"><span>已选择 <strong>{selectedIds.length}</strong> 条记录</span><GhostButton onClick={() => setSelectedIds([])}>取消选择</GhostButton><GhostButton className="danger-button" onClick={() => { onBulkDelete(selectedIds); setSelectedIds([]); }}><DeleteOutlined /> 批量删除</GhostButton></div>}
       {view === "table" && <ProjectTable projects={filtered} selectedIds={selectedIds} setSelectedIds={setSelectedIds} onView={onView} onEdit={onEdit} onDelete={onDelete} />}
       {view === "kanban" && <KanbanView projects={filtered} onView={onView} />}
       {view === "calendar" && <WeeklyUpdateView projects={projects} weeklyUpdates={weeklyUpdates} users={users} roleKey={roleKey} currentUserId={currentUserId} currentUserName={currentUserName} onSave={onSaveWeekly} onView={onView} />}
-      {view === "daily-report" && roleKey === "admin" && <DailyReportImportView projects={projects} users={users} importHistory={dailyReportImports} onAnalyze={onAnalyzeDailyReport} onImport={onImportDailyReport} />}
+      {view === "daily-report" && roleKey === "admin" && <DailyReportImportView projects={projects} users={users} importHistory={dailyReportImports} onAnalyze={onAnalyzeDailyReport} onImport={onImportDailyReport} onLoadDraft={onLoadDailyDraft} onSaveDraft={onSaveDailyDraft} onClearDraft={onClearDailyDraft} />}
     </div>
   );
 }
 
-function SmartQueryPanel({ onAsk, projectCount, roleKey }) {
-  const [messages, setMessages] = useState([{ role: "assistant", content: "可以直接问我区域、项目阶段、金额、负责人、风险、提醒和本周行动，我会按你的数据权限实时查询。" }]);
+const SMART_QUERY_GREETING = { role: "assistant", content: "可以直接问我区域、项目阶段、金额、负责人、风险、提醒和本周行动，我会按你的数据权限实时查询。" };
+
+function SmartQueryPanel({ onAsk, onLoadHistory, onSaveHistory, onClearHistory, projectCount, roleKey }) {
+  const [messages, setMessages] = useState([SMART_QUERY_GREETING]);
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
+  const [historyStatus, setHistoryStatus] = useState("正在读取账号会话");
   const suggested = ["哪些项目客户触达很多但仍未成单？", "赢单项目前平均需要多少次客户触达？", "按负责人分析加权管道和风险", "总结本周销售行动和需要领导支持的事项"];
+
+  useEffect(() => {
+    let active = true;
+    onLoadHistory()
+      .then((saved) => {
+        if (!active) return;
+        const savedMessages = Array.isArray(saved?.messages) ? saved.messages.filter((item) => item?.role && item?.content).slice(-40) : [];
+        if (savedMessages.length) setMessages(savedMessages);
+        setHistoryStatus(savedMessages.length ? `已恢复 ${savedMessages.length} 条账号会话` : "会话已绑定当前账号");
+      })
+      .catch(() => {
+        if (active) setHistoryStatus("历史会话读取失败，本次对话仍可使用");
+      });
+    return () => { active = false; };
+  }, [onLoadHistory]);
+
+  const persistMessages = async (nextMessages) => {
+    const normalized = nextMessages.slice(-40).map(({ role, content, meta, error }) => ({ role, content, meta: meta || "", error: Boolean(error) }));
+    await onSaveHistory(normalized);
+    setHistoryStatus("对话已保存到当前账号");
+  };
+
   const submitQuestion = async (value = question) => {
     const content = value.trim();
     if (!content || asking) return;
@@ -1404,21 +1474,32 @@ function SmartQueryPanel({ onAsk, projectCount, roleKey }) {
     setMessages(nextMessages);
     setQuestion("");
     setAsking(true);
+    persistMessages(nextMessages).catch(() => setHistoryStatus("当前问题暂未同步，回答后将重试"));
     try {
       const result = await onAsk(content, messages);
-      setMessages((current) => [...current, { role: "assistant", content: result.answer, meta: `${result.model} · ${result.dataScope} · ${result.projectCount} 个项目` }]);
+      const finalMessages = [...nextMessages, { role: "assistant", content: result.answer, meta: `${result.model} · ${result.dataScope} · ${result.projectCount} 个项目` }];
+      setMessages(finalMessages);
+      persistMessages(finalMessages).catch(() => setHistoryStatus("回答成功，但会话同步失败"));
     } catch (error) {
-      setMessages((current) => [...current, { role: "assistant", content: error.message || "智能问数暂时不可用，请稍后重试。", error: true }]);
+      const finalMessages = [...nextMessages, { role: "assistant", content: error.message || "智能问数暂时不可用，请稍后重试。", error: true }];
+      setMessages(finalMessages);
+      persistMessages(finalMessages).catch(() => setHistoryStatus("会话保存失败，请稍后重试"));
     } finally {
       setAsking(false);
     }
+  };
+
+  const clearHistory = async () => {
+    await onClearHistory();
+    setMessages([SMART_QUERY_GREETING]);
+    setHistoryStatus("账号会话已清空");
   };
 
   return (
     <article className="smart-query-card">
       <header>
         <div className="smart-query-title"><i><RobotOutlined /></i><div><p>MARKETING DATA COPILOT</p><h2>智能问数</h2><span>GPT-5.5 实时读取当前权限下的营销地图数据</span></div></div>
-        <div className="smart-query-scope"><SafetyCertificateOutlined /><span><strong>{roleKey === "sales" ? "本人数据" : "全部可见数据"}</strong><small>{projectCount} 个项目 · 不包含联系人敏感信息</small></span></div>
+        <div className="smart-query-account"><div className="smart-query-scope"><SafetyCertificateOutlined /><span><strong>{roleKey === "sales" ? "本人数据" : "全部可见数据"}</strong><small>{projectCount} 个项目 · {historyStatus}</small></span></div><button type="button" disabled={asking || messages.length <= 1} onClick={clearHistory}>清空对话</button></div>
       </header>
       <div className="smart-query-layout">
         <section className="smart-chat">
@@ -1442,7 +1523,7 @@ function SmartQueryPanel({ onAsk, projectCount, roleKey }) {
   );
 }
 
-function AnalysisPage({ projects, roleKey, onAsk }) {
+function AnalysisPage({ projects, roleKey, onAsk, onLoadHistory, onSaveHistory, onClearHistory }) {
   const total = projects.reduce((sum, project) => sum + project.amount, 0);
   const weighted = projects.reduce((sum, project) => sum + project.amount * getStage(project.stage).probability / 100, 0);
   const highRisk = projects.filter((project) => project.health === "red").length;
@@ -1467,7 +1548,7 @@ function AnalysisPage({ projects, roleKey, onAsk }) {
   return (
     <div className="standard-page analysis-page">
       <PageHeader eyebrow="EXECUTIVE BUSINESS INTELLIGENCE" title="BI 分析" description={`统一口径洞察区域、阶段、客户和销售经营表现 · ${new Date().getFullYear()} 年`} actions={<PrimaryButton onClick={() => window.print()}><DownloadOutlined /> 导出经营报告</PrimaryButton>} />
-      <SmartQueryPanel onAsk={onAsk} projectCount={projects.length} roleKey={roleKey} />
+      <SmartQueryPanel onAsk={onAsk} onLoadHistory={onLoadHistory} onSaveHistory={onSaveHistory} onClearHistory={onClearHistory} projectCount={projects.length} roleKey={roleKey} />
       <div className="analysis-kpis">
         <Metric label="商机总额（万元）" value={formatMoney(total)} />
         <Metric label="加权管道（万元）" value={formatMoney(weighted)} />
@@ -1718,6 +1799,7 @@ export function App() {
   const [toast, setToast] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [savingProject, setSavingProject] = useState(false);
+  const dataLoadedRef = useRef(false);
 
   const projects = backendProjects;
   const alerts = backendAlerts;
@@ -1731,19 +1813,21 @@ export function App() {
   }, []);
 
   const refreshBackendData = useCallback(async () => {
-    if (!auth.backendConfigured || !auth.session || !auth.profile) return;
-    setDataLoading(true);
+    const currentUserId = auth.session?.user?.id;
+    if (!auth.backendConfigured || !currentUserId || !auth.profile) return;
+    if (!dataLoadedRef.current) setDataLoading(true);
     setDataError("");
     try {
       const [data, users] = await Promise.all([loadBackendData(), loadDirectory()]);
       applyBackendData(data);
       setDirectoryUsers(users);
+      dataLoadedRef.current = true;
     } catch (error) {
       setDataError(error.message || "后端数据加载失败");
     } finally {
       setDataLoading(false);
     }
-  }, [applyBackendData, auth.backendConfigured, auth.profile, auth.session]);
+  }, [applyBackendData, auth.backendConfigured, auth.profile, auth.session?.user?.id]);
 
   useEffect(() => {
     refreshBackendData();
@@ -1862,6 +1946,13 @@ export function App() {
     }
   };
 
+  const loadDailyReportDraft = useCallback(() => loadWorkspaceState("daily_report_draft"), []);
+  const saveDailyReportDraft = useCallback((state) => saveWorkspaceState("daily_report_draft", state, auth.session?.user?.id), [auth.session?.user?.id]);
+  const clearDailyReportDraft = useCallback(() => clearWorkspaceState("daily_report_draft"), []);
+  const loadMarketingHistory = useCallback(() => loadWorkspaceState("marketing_qa_history"), []);
+  const saveMarketingHistory = useCallback((messages) => saveWorkspaceState("marketing_qa_history", { messages }, auth.session?.user?.id), [auth.session?.user?.id]);
+  const clearMarketingHistory = useCallback(() => clearWorkspaceState("marketing_qa_history"), []);
+
   if (!auth.backendConfigured) return <DataErrorScreen message="系统未配置 Supabase 生产环境，已禁止使用本地模拟数据。" onRetry={() => window.location.reload()} />;
   if ((auth.passwordSetupRequired || auth.profile?.password_change_required) && auth.session) return <PasswordSetupScreen onComplete={auth.completePasswordSetup} error={auth.error} forced={Boolean(auth.profile?.password_change_required)} />;
   if (auth.loading) return <AppLoadingScreen />;
@@ -1875,8 +1966,8 @@ export function App() {
   const page = (() => {
     switch (activePage) {
       case "map": return <MapPage projects={visibleProjects} alerts={alerts} roleKey={roleKey} currentUserName={currentUser.display_name} selectedProjectId={selectedProjectId} onSelectProject={setSelectedProjectId} onGoToProject={setDetailProject} onOpenAlerts={() => setActivePage("alerts")} onRefresh={refreshBackendData} />;
-      case "workbench": return <WorkbenchPage projects={visibleProjects} weeklyUpdates={operations.weeklyUpdates} dailyReportImports={operations.dailyReportImports} users={directoryUsers} roleKey={roleKey} currentUserId={auth.session.user.id} currentUserName={currentUser.display_name} onSaveWeekly={saveSalesWeek} onAnalyzeDailyReport={analyzeSalesDailyReport} onImportDailyReport={saveSalesDailyReport} onCreate={openCreate} onView={setDetailProject} onEdit={openEdit} onDelete={setDeleteTarget} onBulkDelete={setBulkDeleteIds} />;
-      case "analysis": return <AnalysisPage projects={visibleProjects} roleKey={roleKey} onAsk={askMarketingData} />;
+      case "workbench": return <WorkbenchPage projects={visibleProjects} weeklyUpdates={operations.weeklyUpdates} dailyReportImports={operations.dailyReportImports} users={directoryUsers} roleKey={roleKey} currentUserId={auth.session.user.id} currentUserName={currentUser.display_name} onSaveWeekly={saveSalesWeek} onAnalyzeDailyReport={analyzeSalesDailyReport} onImportDailyReport={saveSalesDailyReport} onLoadDailyDraft={loadDailyReportDraft} onSaveDailyDraft={saveDailyReportDraft} onClearDailyDraft={clearDailyReportDraft} onCreate={openCreate} onView={setDetailProject} onEdit={openEdit} onDelete={setDeleteTarget} onBulkDelete={setBulkDeleteIds} />;
+      case "analysis": return <AnalysisPage projects={visibleProjects} roleKey={roleKey} onAsk={askMarketingData} onLoadHistory={loadMarketingHistory} onSaveHistory={saveMarketingHistory} onClearHistory={clearMarketingHistory} />;
       case "management": return <ManagementPage projects={visibleProjects} operations={operations} users={directoryUsers} roleKey={roleKey} onCreate={openCreate} onImportOpen={() => setImportOpen(true)} onRefresh={refreshBackendData} />;
       case "alerts": return <AlertsPage alerts={alerts} setAlerts={applyAlertUpdate} alertRules={operations.alertRules} roleKey={roleKey} projects={visibleProjects} onViewProject={setDetailProject} onUpdateRule={saveAlertRule} onRefresh={refreshBackendData} />;
       case "system": return <SystemPage roleKey={roleKey} onToast={notify} initialUsers={directoryUsers} onInviteUser={inviteUser} onToggleUser={toggleUser} />;

@@ -23,7 +23,11 @@ export function AuthProvider({ children }) {
       setLoading(false);
     });
     const { data: subscription } = supabase.auth.onAuthStateChange((event, nextSession) => {
-      setSession(nextSession);
+      setSession((current) => {
+        const sameUser = current?.user?.id && current.user.id === nextSession?.user?.id;
+        if (sameUser && ["INITIAL_SESSION", "SIGNED_IN", "TOKEN_REFRESHED"].includes(event)) return current;
+        return nextSession;
+      });
       if (event === "PASSWORD_RECOVERY") setPasswordSetupRequired(true);
       if (!nextSession) {
         setProfile(null);
