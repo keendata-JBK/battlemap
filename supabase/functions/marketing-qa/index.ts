@@ -106,6 +106,12 @@ async function processJob(
 
     if (!modelResponse.ok) {
       const message = (await modelResponse.text()).slice(0, 500);
+      if (modelResponse.status === 429 && message.includes("API_KEY_QUOTA_EXHAUSTED")) {
+        throw new Error("模型接口额度已用完，请管理员在 KeenRouter 提高该 API Key 额度后重试。");
+      }
+      if (modelResponse.status === 401 && message.includes("API_KEY_DISABLED")) {
+        throw new Error("模型接口密钥已被 KeenRouter 禁用，请管理员重新启用该密钥或更新为新的可用密钥。");
+      }
       throw new Error(`模型服务调用失败（${modelResponse.status}）：${message}`);
     }
     const modelData = await modelResponse.json();
