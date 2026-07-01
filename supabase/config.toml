@@ -26,3 +26,6 @@ verify_jwt = true
 
 [functions.map-boundary]
 verify_jwt = false
+
+[functions.marketing-qa]
+verify_jwt = true

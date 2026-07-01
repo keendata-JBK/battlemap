@@ -22,6 +22,7 @@ import {
   FilterOutlined,
   FullscreenOutlined,
   InfoCircleOutlined,
+  LeftOutlined,
   LoadingOutlined,
   LogoutOutlined,
   MenuOutlined,
@@ -31,10 +32,12 @@ import {
   ProjectOutlined,
   ReloadOutlined,
   RightOutlined,
+  RobotOutlined,
   RiseOutlined,
   SafetyCertificateOutlined,
   SaveOutlined,
   SearchOutlined,
+  SendOutlined,
   SettingOutlined,
   TableOutlined,
   TeamOutlined,
@@ -64,15 +67,18 @@ import {
 } from "./services/mapService.js";
 import { parseImportCsv } from "./services/importService.js";
 import {
+  askMarketingData,
   createBackendUser,
   loadBackendData,
   loadDirectory,
   loadProjectActivities,
   importBackendProjects,
   saveBackendProject,
+  saveWeeklyUpdate,
   setBackendUserActive,
   softDeleteBackendProjects,
   updateBackendAlerts,
+  updateAlertRule,
 } from "./services/backendRepository.js";
 import logo from "./assets/keendata-logo.png";
 
@@ -127,6 +133,39 @@ function isInCurrentWeek(value, reference = new Date()) {
   end.setDate(end.getDate() + 7);
   const date = new Date(value);
   return date >= start && date < end;
+}
+
+function dateInputValue(value) {
+  const date = new Date(value);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getWeekStart(value = new Date()) {
+  const date = new Date(value);
+  date.setHours(12, 0, 0, 0);
+  date.setDate(date.getDate() - ((date.getDay() + 6) % 7));
+  return dateInputValue(date);
+}
+
+function shiftWeek(weekStart, amount) {
+  const date = new Date(`${weekStart}T12:00:00`);
+  date.setDate(date.getDate() + amount * 7);
+  return dateInputValue(date);
+}
+
+function formatWeekRange(weekStart) {
+  const start = new Date(`${weekStart}T12:00:00`);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 6);
+  const formatter = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" });
+  return `${formatter.format(start)}—${formatter.format(end)}`;
+}
+
+function createActionId() {
+  return globalThis.crypto?.randomUUID?.() ?? `action-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function formatProjectLocation(project) {
@@ -997,22 +1036,133 @@ function KanbanView({ projects, onView }) {
   );
 }
 
-function CalendarView({ projects, onView }) {
-  const grouped = projects.reduce((acc, project) => {
-    acc[project.nextActionDate] ??= [];
-    acc[project.nextActionDate].push(project);
-    return acc;
+function WeeklyUpdateView({ projects, weeklyUpdates, users, roleKey, currentUserId, currentUserName, onSave, onView }) {
+  const salesUsers = users.filter((user) => user.roleKey === "sales" && user.status === "启用");
+  const availableUsers = roleKey === "sales"
+    ? [{ id: currentUserId, name: currentUserName, roleKey: "sales", status: "启用" }]
+    : salesUsers;
+  const [weekStart, setWeekStart] = useState(getWeekStart());
+  const [ownerId, setOwnerId] = useState(roleKey === "sales" ? currentUserId : availableUsers[0]?.id ?? currentUserId);
+  const [saving, setSaving] = useState(false);
+  const existing = weeklyUpdates.find((item) => item.ownerId === ownerId && item.weekStart === weekStart);
+  const owner = availableUsers.find((user) => user.id === ownerId) ?? users.find((user) => user.id === ownerId);
+  const ownerProjects = projects.filter((project) => project.ownerId === ownerId);
+  const [draft, setDraft] = useState({ lastWeekSummary: "", thisWeekGoal: "", risks: "", supportNeeded: "", actions: [] });
+
+  useEffect(() => {
+    setDraft(existing ? {
+      lastWeekSummary: existing.lastWeekSummary,
+      thisWeekGoal: existing.thisWeekGoal,
+      risks: existing.risks,
+      supportNeeded: existing.supportNeeded,
+      actions: existing.actions,
+    } : { lastWeekSummary: "", thisWeekGoal: "", risks: "", supportNeeded: "", actions: [] });
+  }, [existing?.id, existing?.updatedAt, ownerId, weekStart]);
+
+  useEffect(() => {
+    if (!availableUsers.some((user) => user.id === ownerId)) setOwnerId(availableUsers[0]?.id ?? currentUserId);
+  }, [availableUsers, currentUserId, ownerId]);
+
+  const weekEnd = shiftWeek(weekStart, 1);
+  const actionProject = (action) => projects.find((project) => project.id === action.projectId);
+  const actionStats = {
+    total: draft.actions.length,
+    done: draft.actions.filter((action) => action.status === "done").length,
+    blocked: draft.actions.filter((action) => action.status === "blocked").length,
+  };
+  const updateAction = (id, field, value) => setDraft((current) => ({
+    ...current,
+    actions: current.actions.map((action) => action.id === id ? { ...action, [field]: value } : action),
+  }));
+  const addAction = () => setDraft((current) => ({
+    ...current,
+    actions: [...current.actions, {
+      id: createActionId(),
+      projectId: ownerProjects[0]?.id ?? "",
+      title: ownerProjects[0]?.nextAction ?? "",
+      dueDate: weekStart,
+      status: "planned",
+    }],
+  }));
+  const removeAction = (id) => setDraft((current) => ({ ...current, actions: current.actions.filter((action) => action.id !== id) }));
+  const submit = async (status) => {
+    if (status === "submitted" && !draft.thisWeekGoal.trim()) return;
+    setSaving(true);
+    try {
+      await onSave({ ...draft, ownerId, weekStart, status });
+    } finally {
+      setSaving(false);
+    }
+  };
+  const groupedActions = draft.actions.reduce((result, action) => {
+    const date = action.dueDate || weekStart;
+    result[date] ??= [];
+    result[date].push(action);
+    return result;
   }, {});
+
   return (
-    <div className="calendar-view">
-      {Object.entries(grouped).sort(([a], [b]) => a.localeCompare(b)).map(([date, rows]) => (
-        <section key={date}><header><CalendarOutlined /><strong>{date}</strong><span>{rows.length} 项任务</span></header><div>{rows.map((project) => <button type="button" key={project.id} onClick={() => onView(project)}><i style={{ background: CATEGORY_META[project.category].color }} /><span><strong>{project.nextAction}</strong><small>{project.name}</small></span><em>{project.owner}</em></button>)}</div></section>
-      ))}
+    <div className="weekly-workspace">
+      <header className="weekly-toolbar">
+        <div className="weekly-period">
+          <IconButton label="上一周" onClick={() => setWeekStart((current) => shiftWeek(current, -1))}><LeftOutlined /></IconButton>
+          <div><strong>{formatWeekRange(weekStart)}</strong><span>{weekStart === getWeekStart() ? "本周" : weekStart}</span></div>
+          <IconButton label="下一周" onClick={() => setWeekStart((current) => shiftWeek(current, 1))}><RightOutlined /></IconButton>
+          {weekStart !== getWeekStart() && <GhostButton onClick={() => setWeekStart(getWeekStart())}>回到本周</GhostButton>}
+        </div>
+        <div className="weekly-owner">
+          <span>周更新人</span>
+          {roleKey === "sales" ? <strong>{currentUserName}</strong> : <select value={ownerId} onChange={(event) => setOwnerId(event.target.value)}>{availableUsers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select>}
+          <em className={existing?.status === "submitted" ? "is-submitted" : ""}>{existing?.status === "submitted" ? "已提交" : existing ? "草稿" : "未填写"}</em>
+        </div>
+      </header>
+
+      <div className="weekly-kpis">
+        <Metric label="本周项目" value={ownerProjects.length} />
+        <Metric label="行动事项" value={actionStats.total} />
+        <Metric label="已完成" value={actionStats.done} />
+        <Metric label="阻塞事项" value={actionStats.blocked} inverse />
+      </div>
+
+      <div className="weekly-layout">
+        <section className="weekly-form-card">
+          <header><div><p>WEEKLY SALES UPDATE</p><h2>{owner?.name ?? currentUserName} · 周行动更新</h2></div><span>最后保存：{formatDateTime(existing?.updatedAt)}</span></header>
+          <div className="weekly-summary-fields">
+            <label><span>上周完成与关键结果</span><textarea value={draft.lastWeekSummary} onChange={(event) => setDraft((current) => ({ ...current, lastWeekSummary: event.target.value }))} placeholder="客户拜访、方案提交、阶段变化、赢单结果……" /></label>
+            <label><span>本周重点目标 <b>*</b></span><textarea value={draft.thisWeekGoal} onChange={(event) => setDraft((current) => ({ ...current, thisWeekGoal: event.target.value }))} placeholder="明确本周必须推进的经营目标和量化结果" /></label>
+            <label><span>风险与阻塞</span><textarea value={draft.risks} onChange={(event) => setDraft((current) => ({ ...current, risks: event.target.value }))} placeholder="客户、预算、竞争、交付或内部资源风险" /></label>
+            <label><span>需要协同支持</span><textarea value={draft.supportNeeded} onChange={(event) => setDraft((current) => ({ ...current, supportNeeded: event.target.value }))} placeholder="需要领导、售前、产品或伙伴支持的事项" /></label>
+          </div>
+          <div className="weekly-actions-editor">
+            <header><div><strong>本周项目行动</strong><span>每条行动绑定项目、截止日期和状态</span></div><GhostButton onClick={addAction}><PlusOutlined /> 添加行动</GhostButton></header>
+            {draft.actions.map((action, index) => (
+              <div className="weekly-action-row" key={action.id}>
+                <b>{String(index + 1).padStart(2, "0")}</b>
+                <select value={action.projectId} onChange={(event) => updateAction(action.id, "projectId", event.target.value)}><option value="">非项目行动</option>{ownerProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>
+                <input value={action.title} onChange={(event) => updateAction(action.id, "title", event.target.value)} placeholder="本周具体行动" />
+                <input type="date" min={weekStart} max={dateInputValue(new Date(`${weekEnd}T12:00:00`).setDate(new Date(`${weekEnd}T12:00:00`).getDate() - 1))} value={action.dueDate || ""} onChange={(event) => updateAction(action.id, "dueDate", event.target.value)} />
+                <select value={action.status} onChange={(event) => updateAction(action.id, "status", event.target.value)}><option value="planned">待开始</option><option value="in_progress">推进中</option><option value="done">已完成</option><option value="blocked">受阻</option></select>
+                <IconButton label="删除行动" onClick={() => removeAction(action.id)}><DeleteOutlined /></IconButton>
+              </div>
+            ))}
+            {!draft.actions.length && <div className="empty-state"><CalendarOutlined /><strong>本周尚未添加项目行动</strong><span>点击“添加行动”形成可跟踪的周计划</span></div>}
+          </div>
+          <footer><span>提交后仍可补充更新，系统会记录更新时间并关闭“周更新未提交”提醒。</span><div><GhostButton disabled={saving} onClick={() => submit("draft")}>保存草稿</GhostButton><PrimaryButton disabled={saving || !draft.thisWeekGoal.trim()} onClick={() => submit("submitted")}>{saving ? <LoadingOutlined spin /> : <CheckOutlined />} 提交周更新</PrimaryButton></div></footer>
+        </section>
+
+        <aside className="weekly-agenda">
+          <header><div><p>ACTION CALENDAR</p><h2>本周行动日历</h2></div><CalendarOutlined /></header>
+          {Object.entries(groupedActions).sort(([a], [b]) => a.localeCompare(b)).map(([date, actions]) => (
+            <section key={date}><div><strong>{date}</strong><span>{actions.length} 项</span></div>{actions.map((action) => { const project = actionProject(action); return <button type="button" key={action.id} onClick={() => project && onView(project)}><i className={`weekly-status weekly-status--${action.status}`} /><span><strong>{action.title || "未填写行动"}</strong><small>{project?.name ?? "非项目行动"}</small></span><em>{{ planned: "待开始", in_progress: "推进中", done: "已完成", blocked: "受阻" }[action.status]}</em></button>; })}</section>
+          ))}
+          {!draft.actions.length && <div className="weekly-agenda__empty"><CalendarOutlined /><strong>等待周计划</strong><span>行动提交后将在这里按日期排布。</span></div>}
+        </aside>
+      </div>
     </div>
   );
 }
 
-function WorkbenchPage({ projects, onCreate, onView, onEdit, onDelete, onBulkDelete }) {
+function WorkbenchPage({ projects, weeklyUpdates, users, roleKey, currentUserId, currentUserName, onSaveWeekly, onCreate, onView, onEdit, onDelete, onBulkDelete }) {
   const [view, setView] = useState("table");
   const [selectedIds, setSelectedIds] = useState([]);
   const [filters, setFilters] = useState({ search: "", region: "全部区域", category: "all", stage: "all" });
@@ -1035,19 +1185,69 @@ function WorkbenchPage({ projects, onCreate, onView, onEdit, onDelete, onBulkDel
     <div className="standard-page">
       <PageHeader eyebrow="MULTI-DIMENSIONAL WORKBENCH" title="数据工作台" description="像多维表格一样定位、筛选和推进所有营销项目" actions={<PrimaryButton onClick={onCreate}><PlusOutlined /> 新建项目</PrimaryButton>} />
       <section className="view-strip">
-        <div>{[{ key: "table", label: "表格", icon: TableOutlined }, { key: "kanban", label: "阶段看板", icon: AppstoreOutlined }, { key: "calendar", label: "行动日历", icon: CalendarOutlined }].map((item) => { const Icon = item.icon; return <button key={item.key} type="button" className={view === item.key ? "is-active" : ""} onClick={() => setView(item.key)}><Icon />{item.label}</button>; })}</div>
+        <div>{[{ key: "table", label: "表格", icon: TableOutlined }, { key: "kanban", label: "阶段看板", icon: AppstoreOutlined }, { key: "calendar", label: "周行动更新", icon: CalendarOutlined }].map((item) => { const Icon = item.icon; return <button key={item.key} type="button" className={view === item.key ? "is-active" : ""} onClick={() => setView(item.key)}><Icon />{item.label}</button>; })}</div>
         <span>当前视图：<strong>全部项目作战总表</strong></span>
       </section>
       <FilterBar filters={filters} setFilters={setFilters} onCreate={onCreate} onExport={handleExport} resultCount={filtered.length} />
       {selectedIds.length > 0 && <div className="bulk-bar"><span>已选择 <strong>{selectedIds.length}</strong> 条记录</span><GhostButton onClick={() => setSelectedIds([])}>取消选择</GhostButton><GhostButton className="danger-button" onClick={() => { onBulkDelete(selectedIds); setSelectedIds([]); }}><DeleteOutlined /> 批量删除</GhostButton></div>}
       {view === "table" && <ProjectTable projects={filtered} selectedIds={selectedIds} setSelectedIds={setSelectedIds} onView={onView} onEdit={onEdit} onDelete={onDelete} />}
       {view === "kanban" && <KanbanView projects={filtered} onView={onView} />}
-      {view === "calendar" && <CalendarView projects={filtered} onView={onView} />}
+      {view === "calendar" && <WeeklyUpdateView projects={projects} weeklyUpdates={weeklyUpdates} users={users} roleKey={roleKey} currentUserId={currentUserId} currentUserName={currentUserName} onSave={onSaveWeekly} onView={onView} />}
     </div>
   );
 }
 
-function AnalysisPage({ projects }) {
+function SmartQueryPanel({ onAsk, projectCount, roleKey }) {
+  const [messages, setMessages] = useState([{ role: "assistant", content: "可以直接问我区域、项目阶段、金额、负责人、风险、提醒和本周行动，我会按你的数据权限实时查询。" }]);
+  const [question, setQuestion] = useState("");
+  const [asking, setAsking] = useState(false);
+  const suggested = ["本月最需要关注的项目有哪些？", "按负责人分析加权管道和风险", "哪些项目下一步动作已经逾期？", "总结本周销售行动和需要领导支持的事项"];
+  const submitQuestion = async (value = question) => {
+    const content = value.trim();
+    if (!content || asking) return;
+    const nextMessages = [...messages, { role: "user", content }];
+    setMessages(nextMessages);
+    setQuestion("");
+    setAsking(true);
+    try {
+      const result = await onAsk(content, messages);
+      setMessages((current) => [...current, { role: "assistant", content: result.answer, meta: `${result.model} · ${result.dataScope} · ${result.projectCount} 个项目` }]);
+    } catch (error) {
+      setMessages((current) => [...current, { role: "assistant", content: error.message || "智能问数暂时不可用，请稍后重试。", error: true }]);
+    } finally {
+      setAsking(false);
+    }
+  };
+
+  return (
+    <article className="smart-query-card">
+      <header>
+        <div className="smart-query-title"><i><RobotOutlined /></i><div><p>MARKETING DATA COPILOT</p><h2>智能问数</h2><span>GPT-5.5 实时读取当前权限下的营销地图数据</span></div></div>
+        <div className="smart-query-scope"><SafetyCertificateOutlined /><span><strong>{roleKey === "sales" ? "本人数据" : "全部可见数据"}</strong><small>{projectCount} 个项目 · 不包含联系人敏感信息</small></span></div>
+      </header>
+      <div className="smart-query-layout">
+        <section className="smart-chat">
+          <div className="smart-chat__messages">
+            {messages.map((message, index) => <div className={`smart-message smart-message--${message.role} ${message.error ? "smart-message--error" : ""}`} key={`${message.role}-${index}`}><span>{message.role === "assistant" ? <RobotOutlined /> : <UserOutlined />}</span><div><p>{message.content}</p>{message.meta && <small>{message.meta}</small>}</div></div>)}
+            {asking && <div className="smart-message smart-message--assistant"><span><RobotOutlined /></span><div><p><LoadingOutlined spin /> 正在读取最新营销数据并分析……</p></div></div>}
+          </div>
+          <form className="smart-chat__composer" onSubmit={(event) => { event.preventDefault(); submitQuestion(); }}>
+            <textarea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="例如：华东区域本季度有哪些高价值项目存在延期风险？" />
+            <button type="submit" disabled={asking || !question.trim()} aria-label="发送问题"><SendOutlined /></button>
+          </form>
+        </section>
+        <aside className="smart-query-suggestions">
+          <strong>推荐问题</strong>
+          <span>基于经营管理常用分析口径</span>
+          <div>{suggested.map((item) => <button type="button" key={item} disabled={asking} onClick={() => submitQuestion(item)}>{item}<RightOutlined /></button>)}</div>
+          <footer><InfoCircleOutlined /><p>回答仅基于数据库当前记录。数据不完整时，助手会明确提示缺少字段。</p></footer>
+        </aside>
+      </div>
+    </article>
+  );
+}
+
+function AnalysisPage({ projects, roleKey, onAsk }) {
   const total = projects.reduce((sum, project) => sum + project.amount, 0);
   const weighted = projects.reduce((sum, project) => sum + project.amount * getStage(project.stage).probability / 100, 0);
   const highRisk = projects.filter((project) => project.health === "red").length;
@@ -1072,6 +1272,7 @@ function AnalysisPage({ projects }) {
   return (
     <div className="standard-page analysis-page">
       <PageHeader eyebrow="EXECUTIVE BUSINESS INTELLIGENCE" title="BI 分析" description={`统一口径洞察区域、阶段、客户和销售经营表现 · ${new Date().getFullYear()} 年`} actions={<PrimaryButton onClick={() => window.print()}><DownloadOutlined /> 导出经营报告</PrimaryButton>} />
+      <SmartQueryPanel onAsk={onAsk} projectCount={projects.length} roleKey={roleKey} />
       <div className="analysis-kpis">
         <Metric label="商机总额（万元）" value={formatMoney(total)} />
         <Metric label="加权管道（万元）" value={formatMoney(weighted)} />
@@ -1184,18 +1385,40 @@ function ManagementPage({ projects, operations, users, roleKey, onCreate, onImpo
   );
 }
 
-function AlertsPage({ alerts, setAlerts, projects, onViewProject }) {
+function AlertRuleSettings({ rules, roleKey, onUpdate, onClose }) {
+  const [savingId, setSavingId] = useState(null);
+  const saveRule = async (rule, changes) => {
+    setSavingId(rule.id);
+    try {
+      await onUpdate({ ...rule, ...changes });
+    } finally {
+      setSavingId(null);
+    }
+  };
+  return (
+    <div className="alert-rule-settings">
+      <div className="alert-rule-settings__intro"><InfoCircleOutlined /><p>提醒由数据库规则自动生成。每次刷新、项目更新或提交周更新时都会重新计算，并按登录人的数据权限展示。</p></div>
+      {rules.map((rule) => <article key={rule.id} className={!rule.enabled ? "is-disabled" : ""}><i className={`alert-dot alert-dot--${rule.level}`} /><div><strong>{rule.name}</strong><p>{rule.description}</p><small>规则代码：{rule.code}</small></div><label><span>阈值（天）</span><input type="number" min="0" max="365" value={rule.thresholdDays} disabled={roleKey !== "admin" || savingId === rule.id} onChange={(event) => saveRule(rule, { thresholdDays: event.target.value })} /></label><label className="rule-switch"><input type="checkbox" checked={rule.enabled} disabled={roleKey !== "admin" || savingId === rule.id} onChange={(event) => saveRule(rule, { enabled: event.target.checked })} /><span>{rule.enabled ? "已启用" : "已停用"}</span></label></article>)}
+      {roleKey !== "admin" && <p className="alert-rule-settings__permission">当前为只读规则视图，仅管理员可以调整阈值或停用规则。</p>}
+      <footer className="modal__footer"><PrimaryButton onClick={onClose}>完成</PrimaryButton></footer>
+    </div>
+  );
+}
+
+function AlertsPage({ alerts, setAlerts, alertRules, roleKey, projects, onViewProject, onUpdateRule, onRefresh }) {
   const [filter, setFilter] = useState("all");
+  const [rulesOpen, setRulesOpen] = useState(false);
   const filtered = alerts.filter((alert) => filter === "all" || alert.level === filter || alert.status === filter);
   const resolve = (id) => setAlerts((current) => current.map((alert) => alert.id === id ? { ...alert, status: "已解决", resolvedAt: new Date().toISOString() } : alert));
   const todayNew = alerts.filter((alert) => isSameLocalDay(alert.createdAt)).length;
   const weekResolved = alerts.filter((alert) => alert.status === "已解决" && isInCurrentWeek(alert.resolvedAt)).length;
   return (
     <div className="standard-page alerts-page">
-      <PageHeader eyebrow="ALERTS & EXECUTION" title="提醒中心" description="集中处理逾期、停滞、临期和数据质量问题" actions={<PrimaryButton onClick={() => setAlerts((current) => current.map((alert) => ({ ...alert, status: "已确认" })))}><CheckOutlined /> 全部确认</PrimaryButton>} />
+      <PageHeader eyebrow="ALERTS & EXECUTION" title="提醒中心" description="由规则引擎自动识别逾期、停滞、临期和周更新缺失" actions={<><GhostButton onClick={() => setRulesOpen(true)}><SettingOutlined /> 规则配置</GhostButton><GhostButton onClick={onRefresh}><ReloadOutlined /> 重新计算</GhostButton><PrimaryButton onClick={() => setAlerts((current) => current.map((alert) => ({ ...alert, status: "已确认" })))}><CheckOutlined /> 全部确认</PrimaryButton></>} />
       <div className="alert-summary"><Metric label="待处理" value={alerts.filter((a) => a.status === "待处理").length} inverse /><Metric label="红色风险" value={alerts.filter((a) => a.level === "red").length} inverse /><Metric label="今日新增" value={todayNew} /><Metric label="本周已闭环" value={weekResolved} /></div>
       <div className="alert-filter-tabs">{[{ key: "all", label: "全部" }, { key: "待处理", label: "待处理" }, { key: "red", label: "红色风险" }, { key: "yellow", label: "黄色关注" }, { key: "已解决", label: "已解决" }].map((item) => <button key={item.key} type="button" className={filter === item.key ? "is-active" : ""} onClick={() => setFilter(item.key)}>{item.label}</button>)}</div>
-      <div className="alert-list">{filtered.map((alert) => { const project = projects.find((item) => item.id === alert.projectId); return <article key={alert.id}><i className={`alert-icon alert-icon--${alert.level}`}>{alert.level === "red" ? <WarningFilled /> : <InfoCircleOutlined />}</i><div><header><strong>{alert.title}</strong><span className={`task-result ${alert.status === "已解决" ? "" : "task-result--warning"}`}>{alert.status}</span></header><p>{alert.description}</p><small>{project ? `${project.region} · ${project.owner} · ${project.name}` : "系统数据质量任务"} · {formatDateTime(alert.createdAt)}</small></div><div className="alert-actions">{project && <GhostButton onClick={() => onViewProject(project)}>查看项目</GhostButton>}{alert.status !== "已解决" && <PrimaryButton onClick={() => resolve(alert.id)}>标记解决</PrimaryButton>}</div></article>; })}{!filtered.length && <div className="empty-state"><BellOutlined /><strong>暂无提醒</strong><span>当前筛选条件下没有数据库记录</span></div>}</div>
+      <div className="alert-list">{filtered.map((alert) => { const project = projects.find((item) => item.id === alert.projectId); return <article key={alert.id}><i className={`alert-icon alert-icon--${alert.level}`}>{alert.level === "red" ? <WarningFilled /> : <InfoCircleOutlined />}</i><div><header><strong>{alert.title}</strong><span className={`task-result ${alert.status === "已解决" ? "" : "task-result--warning"}`}>{alert.status}</span></header><p>{alert.description}</p><small>{project ? `${project.region} · ${project.owner} · ${project.name}` : "周更新与系统任务"} · {formatDateTime(alert.createdAt)}</small></div><div className="alert-actions">{project && <GhostButton onClick={() => onViewProject(project)}>查看项目</GhostButton>}{alert.status !== "已解决" && <PrimaryButton onClick={() => resolve(alert.id)}>标记解决</PrimaryButton>}</div></article>; })}{!filtered.length && <div className="empty-state"><BellOutlined /><strong>当前没有待处理提醒</strong><span>点击“规则配置”查看来源，或重新计算当前项目状态</span></div>}</div>
+      {rulesOpen && <Modal title="提醒规则配置" onClose={() => setRulesOpen(false)} width={780}><AlertRuleSettings rules={alertRules} roleKey={roleKey} onUpdate={onUpdateRule} onClose={() => setRulesOpen(false)} /></Modal>}
     </div>
   );
 }
@@ -1285,7 +1508,7 @@ export function App() {
   const auth = useAuth();
   const [backendProjects, setBackendProjects] = useState([]);
   const [backendAlerts, setBackendAlerts] = useState([]);
-  const [operations, setOperations] = useState({ customers: [], importJobs: [], auditLogs: [] });
+  const [operations, setOperations] = useState({ customers: [], importJobs: [], auditLogs: [], weeklyUpdates: [], alertRules: [] });
   const [directoryUsers, setDirectoryUsers] = useState([]);
   const [dataLoading, setDataLoading] = useState(true);
   const [dataError, setDataError] = useState("");
@@ -1309,7 +1532,7 @@ export function App() {
   const applyBackendData = useCallback((data) => {
     setBackendProjects(data.projects);
     setBackendAlerts(data.alerts);
-    setOperations({ customers: data.customers, importJobs: data.importJobs, auditLogs: data.auditLogs });
+    setOperations({ customers: data.customers, importJobs: data.importJobs, auditLogs: data.auditLogs, weeklyUpdates: data.weeklyUpdates, alertRules: data.alertRules });
   }, []);
 
   const refreshBackendData = useCallback(async () => {
@@ -1413,6 +1636,28 @@ export function App() {
     await refreshBackendData();
   };
 
+  const saveSalesWeek = async (input) => {
+    try {
+      await saveWeeklyUpdate(input, auth.session.user.id);
+      await refreshBackendData();
+      notify(input.status === "submitted" ? "本周行动更新已提交" : "周更新草稿已保存");
+    } catch (error) {
+      notify(error.message || "周更新保存失败", "error");
+      throw error;
+    }
+  };
+
+  const saveAlertRule = async (input) => {
+    try {
+      await updateAlertRule(input);
+      await refreshBackendData();
+      notify("提醒规则已更新");
+    } catch (error) {
+      notify(error.message || "提醒规则更新失败", "error");
+      throw error;
+    }
+  };
+
   if (!auth.backendConfigured) return <DataErrorScreen message="系统未配置 Supabase 生产环境，已禁止使用本地模拟数据。" onRetry={() => window.location.reload()} />;
   if ((auth.passwordSetupRequired || auth.profile?.password_change_required) && auth.session) return <PasswordSetupScreen onComplete={auth.completePasswordSetup} error={auth.error} forced={Boolean(auth.profile?.password_change_required)} />;
   if (auth.loading) return <AppLoadingScreen />;
@@ -1426,10 +1671,10 @@ export function App() {
   const page = (() => {
     switch (activePage) {
       case "map": return <MapPage projects={visibleProjects} alerts={alerts} roleKey={roleKey} currentUserName={currentUser.display_name} selectedProjectId={selectedProjectId} onSelectProject={setSelectedProjectId} onGoToProject={setDetailProject} onOpenAlerts={() => setActivePage("alerts")} onRefresh={refreshBackendData} />;
-      case "workbench": return <WorkbenchPage projects={visibleProjects} onCreate={openCreate} onView={setDetailProject} onEdit={openEdit} onDelete={setDeleteTarget} onBulkDelete={setBulkDeleteIds} />;
-      case "analysis": return <AnalysisPage projects={visibleProjects} />;
+      case "workbench": return <WorkbenchPage projects={visibleProjects} weeklyUpdates={operations.weeklyUpdates} users={directoryUsers} roleKey={roleKey} currentUserId={auth.session.user.id} currentUserName={currentUser.display_name} onSaveWeekly={saveSalesWeek} onCreate={openCreate} onView={setDetailProject} onEdit={openEdit} onDelete={setDeleteTarget} onBulkDelete={setBulkDeleteIds} />;
+      case "analysis": return <AnalysisPage projects={visibleProjects} roleKey={roleKey} onAsk={askMarketingData} />;
       case "management": return <ManagementPage projects={visibleProjects} operations={operations} users={directoryUsers} roleKey={roleKey} onCreate={openCreate} onImportOpen={() => setImportOpen(true)} onRefresh={refreshBackendData} />;
-      case "alerts": return <AlertsPage alerts={alerts} setAlerts={applyAlertUpdate} projects={visibleProjects} onViewProject={setDetailProject} />;
+      case "alerts": return <AlertsPage alerts={alerts} setAlerts={applyAlertUpdate} alertRules={operations.alertRules} roleKey={roleKey} projects={visibleProjects} onViewProject={setDetailProject} onUpdateRule={saveAlertRule} onRefresh={refreshBackendData} />;
       case "system": return <SystemPage roleKey={roleKey} onToast={notify} initialUsers={directoryUsers} onInviteUser={inviteUser} onToggleUser={toggleUser} />;
       default: return null;
     }

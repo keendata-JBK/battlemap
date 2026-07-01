@@ -49,13 +49,45 @@ function mapAlert(row) {
   return {
     id: row.id,
     projectId: row.project_id,
+    ownerId: row.owner_id,
     level: row.level,
+    alertType: row.alert_type,
     title: row.title,
     description: row.description || "",
     time: new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(row.created_at)),
     status: row.status,
+    dueAt: row.due_at,
     createdAt: row.created_at,
     resolvedAt: row.resolved_at,
+  };
+}
+
+function mapWeeklyUpdate(row) {
+  return {
+    id: row.id,
+    ownerId: row.owner_id,
+    weekStart: row.week_start,
+    status: row.status,
+    lastWeekSummary: row.last_week_summary || "",
+    thisWeekGoal: row.this_week_goal || "",
+    risks: row.risks || "",
+    supportNeeded: row.support_needed || "",
+    actions: Array.isArray(row.actions) ? row.actions : [],
+    submittedAt: row.submitted_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapAlertRule(row) {
+  return {
+    id: row.id,
+    code: row.rule_code,
+    name: row.name,
+    description: row.description,
+    level: row.level,
+    thresholdDays: row.threshold_days,
+    enabled: row.enabled,
+    sortOrder: row.sort_order,
   };
 }
 
@@ -166,9 +198,13 @@ async function savePrimaryContact(form, customerId, ownerId, currentUserId) {
 }
 
 export async function loadBackendData() {
+  const { error: refreshAlertError } = await supabase.rpc("refresh_alerts");
+  if (refreshAlertError) throw refreshAlertError;
   const [
     { data: projectRows, error: projectError },
     { data: alertRows, error: alertError },
+    { data: weeklyRows, error: weeklyError },
+    { data: alertRuleRows, error: alertRuleError },
     { data: contactRows, error: contactError },
     { data: customerRows, error: customerError },
     { data: importRows, error: importError },
@@ -176,6 +212,8 @@ export async function loadBackendData() {
   ] = await Promise.all([
     supabase.from("project_dashboard").select("*").order("updated_at", { ascending: false }),
     supabase.from("alerts").select("*").order("created_at", { ascending: false }),
+    supabase.from("weekly_updates").select("*").order("week_start", { ascending: false }).limit(500),
+    supabase.from("alert_rules").select("*").order("sort_order"),
     supabase.from("contacts").select("customer_id,mobile,email").is("deleted_at", null),
     supabase.from("customers").select("id,name,unified_credit_code,updated_at").is("deleted_at", null),
     supabase.from("import_jobs").select("*").order("created_at", { ascending: false }).limit(100),
@@ -183,6 +221,8 @@ export async function loadBackendData() {
   ]);
   if (projectError) throw projectError;
   if (alertError) throw alertError;
+  if (weeklyError) throw weeklyError;
+  if (alertRuleError) throw alertRuleError;
   if (contactError) throw contactError;
   if (customerError) throw customerError;
   if (importError) throw importError;
@@ -200,10 +240,64 @@ export async function loadBackendData() {
   return {
     projects,
     alerts: alertRows.map(mapAlert),
+    weeklyUpdates: weeklyRows.map(mapWeeklyUpdate),
+    alertRules: alertRuleRows.map(mapAlertRule),
     customers: customerRows,
     importJobs: importRows.map(mapImportJob),
     auditLogs: auditRows.map(mapAuditLog),
   };
+}
+
+export async function saveWeeklyUpdate(input, currentUserId) {
+  const payload = {
+    owner_id: input.ownerId,
+    week_start: input.weekStart,
+    status: input.status,
+    last_week_summary: input.lastWeekSummary?.trim() || "",
+    this_week_goal: input.thisWeekGoal?.trim() || "",
+    risks: input.risks?.trim() || "",
+    support_needed: input.supportNeeded?.trim() || "",
+    actions: (input.actions ?? []).map((action) => ({
+      id: action.id,
+      projectId: action.projectId || null,
+      title: String(action.title ?? "").trim(),
+      dueDate: action.dueDate || null,
+      status: action.status || "planned",
+    })).filter((action) => action.title),
+    created_by: currentUserId,
+    submitted_at: input.status === "submitted" ? new Date().toISOString() : null,
+  };
+  const { data, error } = await supabase
+    .from("weekly_updates")
+    .upsert(payload, { onConflict: "owner_id,week_start" })
+    .select("*")
+    .single();
+  if (error) throw error;
+  const { error: refreshAlertError } = await supabase.rpc("refresh_alerts");
+  if (refreshAlertError) throw refreshAlertError;
+  return mapWeeklyUpdate(data);
+}
+
+export async function updateAlertRule(input) {
+  const { data, error } = await supabase
+    .from("alert_rules")
+    .update({ enabled: input.enabled, threshold_days: Number(input.thresholdDays) })
+    .eq("id", input.id)
+    .select("*")
+    .single();
+  if (error) throw error;
+  const { error: refreshAlertError } = await supabase.rpc("refresh_alerts");
+  if (refreshAlertError) throw refreshAlertError;
+  return mapAlertRule(data);
+}
+
+export async function askMarketingData(question, history = []) {
+  const { data, error } = await supabase.functions.invoke("marketing-qa", {
+    body: { question, history },
+  });
+  if (error) throw new Error(await getFunctionErrorMessage(error));
+  if (data?.error) throw new Error(data.error);
+  return data;
 }
 
 export async function saveBackendProject(form, existingProject, currentUserId) {
