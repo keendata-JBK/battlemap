@@ -1258,6 +1258,8 @@ function DailyReportImportView({ projects, users, importHistory = [], onAnalyze,
   const [error, setError] = useState("");
   const [draftReady, setDraftReady] = useState(false);
   const [draftStatus, setDraftStatus] = useState("正在读取账号草稿");
+  const draftSaveQueueRef = useRef(Promise.resolve());
+  const draftWriteIdRef = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -1282,10 +1284,15 @@ function DailyReportImportView({ projects, users, importHistory = [], onAnalyze,
   useEffect(() => {
     if (!draftReady) return undefined;
     const timer = window.setTimeout(() => {
-      const action = rawText.trim() || entries.length
-        ? onSaveDraft({ rawText, defaultDate, entries, warnings })
-        : onClearDraft();
-      action.then(() => setDraftStatus(rawText.trim() || entries.length ? "草稿已自动保存到当前账号" : "暂无未提交草稿")).catch(() => setDraftStatus("草稿自动保存失败"));
+      const writeId = draftWriteIdRef.current + 1;
+      draftWriteIdRef.current = writeId;
+      const hasDraft = Boolean(rawText.trim() || entries.length);
+      draftSaveQueueRef.current = draftSaveQueueRef.current
+        .catch(() => undefined)
+        .then(() => hasDraft ? onSaveDraft({ rawText, defaultDate, entries, warnings }) : onClearDraft());
+      draftSaveQueueRef.current
+        .then(() => { if (draftWriteIdRef.current === writeId) setDraftStatus(hasDraft ? "草稿已自动保存到当前账号" : "暂无未提交草稿"); })
+        .catch(() => { if (draftWriteIdRef.current === writeId) setDraftStatus("草稿自动保存失败"); });
     }, 700);
     return () => window.clearTimeout(timer);
   }, [defaultDate, draftReady, entries, onClearDraft, onSaveDraft, rawText, warnings]);
@@ -1333,6 +1340,7 @@ function DailyReportImportView({ projects, users, importHistory = [], onAnalyze,
     setError("");
     try {
       await onImport(rawText, defaultDate, readyEntries);
+      await draftSaveQueueRef.current.catch(() => undefined);
       await onClearDraft();
       setRawText("");
       setEntries([]);
@@ -1444,6 +1452,7 @@ function SmartQueryPanel({ onAsk, onLoadHistory, onSaveHistory, onClearHistory, 
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
   const [historyStatus, setHistoryStatus] = useState("正在读取账号会话");
+  const historySaveQueueRef = useRef(Promise.resolve());
   const suggested = ["哪些项目客户触达很多但仍未成单？", "赢单项目前平均需要多少次客户触达？", "按负责人分析加权管道和风险", "总结本周销售行动和需要领导支持的事项"];
 
   useEffect(() => {
@@ -1463,7 +1472,8 @@ function SmartQueryPanel({ onAsk, onLoadHistory, onSaveHistory, onClearHistory, 
 
   const persistMessages = async (nextMessages) => {
     const normalized = nextMessages.slice(-40).map(({ role, content, meta, error }) => ({ role, content, meta: meta || "", error: Boolean(error) }));
-    await onSaveHistory(normalized);
+    historySaveQueueRef.current = historySaveQueueRef.current.catch(() => undefined).then(() => onSaveHistory(normalized));
+    await historySaveQueueRef.current;
     setHistoryStatus("对话已保存到当前账号");
   };
 
@@ -1490,6 +1500,7 @@ function SmartQueryPanel({ onAsk, onLoadHistory, onSaveHistory, onClearHistory, 
   };
 
   const clearHistory = async () => {
+    await historySaveQueueRef.current.catch(() => undefined);
     await onClearHistory();
     setMessages([SMART_QUERY_GREETING]);
     setHistoryStatus("账号会话已清空");
