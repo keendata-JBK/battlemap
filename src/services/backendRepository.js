@@ -205,6 +205,7 @@ export async function loadBackendData() {
     { data: alertRows, error: alertError },
     { data: weeklyRows, error: weeklyError },
     { data: alertRuleRows, error: alertRuleError },
+    { data: dailyImportRows, error: dailyImportError },
     { data: contactRows, error: contactError },
     { data: customerRows, error: customerError },
     { data: importRows, error: importError },
@@ -214,6 +215,7 @@ export async function loadBackendData() {
     supabase.from("alerts").select("*").order("created_at", { ascending: false }),
     supabase.from("weekly_updates").select("*").order("week_start", { ascending: false }).limit(500),
     supabase.from("alert_rules").select("*").order("sort_order"),
+    supabase.from("daily_report_imports").select("id,report_date,status,entry_count,model,created_by,created_at").order("created_at", { ascending: false }).limit(30),
     supabase.from("contacts").select("customer_id,mobile,email").is("deleted_at", null),
     supabase.from("customers").select("id,name,unified_credit_code,updated_at").is("deleted_at", null),
     supabase.from("import_jobs").select("*").order("created_at", { ascending: false }).limit(100),
@@ -223,6 +225,7 @@ export async function loadBackendData() {
   if (alertError) throw alertError;
   if (weeklyError) throw weeklyError;
   if (alertRuleError) throw alertRuleError;
+  if (dailyImportError) throw dailyImportError;
   if (contactError) throw contactError;
   if (customerError) throw customerError;
   if (importError) throw importError;
@@ -242,6 +245,7 @@ export async function loadBackendData() {
     alerts: alertRows.map(mapAlert),
     weeklyUpdates: weeklyRows.map(mapWeeklyUpdate),
     alertRules: alertRuleRows.map(mapAlertRule),
+    dailyReportImports: dailyImportRows,
     customers: customerRows,
     importJobs: importRows.map(mapImportJob),
     auditLogs: auditRows.map(mapAuditLog),
@@ -298,6 +302,38 @@ export async function askMarketingData(question, history = []) {
   if (error) throw new Error(await getFunctionErrorMessage(error));
   if (data?.error) throw new Error(data.error);
   return data;
+}
+
+export async function analyzeDailyReport(rawText, defaultDate) {
+  const { data, error } = await supabase.functions.invoke("daily-report", {
+    body: { rawText, defaultDate },
+  });
+  if (error) throw new Error(await getFunctionErrorMessage(error));
+  if (data?.error) throw new Error(data.error);
+  return data;
+}
+
+export async function importDailyReport(rawText, defaultDate, entries) {
+  const payload = entries.map((entry) => ({
+    projectId: entry.projectId,
+    projectName: entry.projectName,
+    salespersonId: entry.salespersonId,
+    salespersonName: entry.salespersonName,
+    reportDate: entry.reportDate,
+    activityType: entry.activityType,
+    content: entry.content?.trim(),
+    customerContact: entry.customerContact?.trim() || "",
+    matchConfidence: Number(entry.matchConfidence ?? 0),
+    matchReason: entry.matchReason || "",
+    rawSegment: entry.rawSegment || "",
+  }));
+  const { data, error } = await supabase.rpc("import_daily_report", {
+    raw_report_text: rawText,
+    default_report_date: defaultDate,
+    payload,
+  });
+  if (error) throw error;
+  return data?.[0] ?? { imported_count: payload.length };
 }
 
 export async function saveBackendProject(form, existingProject, currentUserId) {
@@ -375,6 +411,17 @@ export async function loadProjectActivities(projectId) {
     .select("id,activity_type,content,occurred_at,next_action,next_action_date,created_by")
     .eq("project_id", projectId)
     .order("occurred_at", { ascending: false });
+  if (error) throw error;
+  return data;
+}
+
+export async function loadProjectDailyReports(projectId) {
+  const { data, error } = await supabase
+    .from("daily_report_entries")
+    .select("id,report_date,activity_type,content,customer_contact,match_confidence,match_reason,salesperson_id,salesperson:profiles!daily_report_entries_salesperson_id_fkey(display_name)")
+    .eq("project_id", projectId)
+    .order("report_date", { ascending: false })
+    .order("created_at", { ascending: false });
   if (error) throw error;
   return data;
 }

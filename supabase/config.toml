@@ -29,3 +29,6 @@ verify_jwt = false
 
 [functions.marketing-qa]
 verify_jwt = true
+
+[functions.daily-report]
+verify_jwt = true
