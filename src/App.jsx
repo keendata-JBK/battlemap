@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   AimOutlined,
   ApartmentOutlined,
@@ -1228,7 +1230,7 @@ function SmartQueryPanel({ onAsk, projectCount, roleKey }) {
       <div className="smart-query-layout">
         <section className="smart-chat">
           <div className="smart-chat__messages">
-            {messages.map((message, index) => <div className={`smart-message smart-message--${message.role} ${message.error ? "smart-message--error" : ""}`} key={`${message.role}-${index}`}><span>{message.role === "assistant" ? <RobotOutlined /> : <UserOutlined />}</span><div><p>{message.content}</p>{message.meta && <small>{message.meta}</small>}</div></div>)}
+            {messages.map((message, index) => <div className={`smart-message smart-message--${message.role} ${message.error ? "smart-message--error" : ""}`} key={`${message.role}-${index}`}><span>{message.role === "assistant" ? <RobotOutlined /> : <UserOutlined />}</span><div>{message.role === "assistant" ? <div className="smart-message__markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div> : <p>{message.content}</p>}{message.meta && <small>{message.meta}</small>}</div></div>)}
             {asking && <div className="smart-message smart-message--assistant"><span><RobotOutlined /></span><div><p><LoadingOutlined spin /> 正在读取最新营销数据并分析……</p></div></div>}
           </div>
           <form className="smart-chat__composer" onSubmit={(event) => { event.preventDefault(); submitQuestion(); }}>
