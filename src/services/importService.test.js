@@ -33,4 +33,22 @@ describe("parseImportCsv", () => {
     expect(row.status).toBe("通过");
     expect(row.data.region).toBe("其他区域");
   });
+
+  it("requires an integrator for indirect contracts and parses delivery partners", () => {
+    const extendedHeaders = `${headers},是否直签,集成商,交付伙伴`;
+    const csv = `${extendedHeaders}\n南京项目,南京客户,,,,平台资源,华东区域,江苏,南京,建邺区,320105,118.7316,32.0039,500,测试用户,,方案设计,P1,,,,否,华东系统集成有限公司,伙伴甲、伙伴乙`;
+    const [row] = parseImportCsv(csv);
+    expect(row.status).toBe("通过");
+    expect(row.data.isDirectContract).toBe(false);
+    expect(row.data.integrator).toBe("华东系统集成有限公司");
+    expect(row.data.deliveryPartners).toEqual(["伙伴甲", "伙伴乙"]);
+  });
+
+  it("rejects an indirect contract without an integrator", () => {
+    const extendedHeaders = `${headers},是否直签,集成商,交付伙伴`;
+    const csv = `${extendedHeaders}\n南京项目,南京客户,,,,平台资源,华东区域,江苏,南京,建邺区,320105,118.7316,32.0039,500,测试用户,,方案设计,P1,,,,否,,伙伴甲`;
+    const [row] = parseImportCsv(csv);
+    expect(row.status).toBe("需修正");
+    expect(row.error).toContain("非直签项目需填写集成商");
+  });
 });

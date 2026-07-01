@@ -47,6 +47,9 @@ export function parseImportCsv(content) {
       stage: stageMap[source["销售阶段"]] ?? source["销售阶段"], health: (healthMap[source["健康度"]] ?? source["健康度"]) || "green", priority: source["优先级"] || "P2",
       nextAction: source["下一步动作"] || "", nextActionDate: source["计划日期"] || "", expectedClose: source["预计成交日期"] || "",
       source: source["数据来源"] || "批量导入", risk: source["风险说明"] || "未填写",
+      isDirectContract: !["否", "no", "false", "0"].includes(String(source["是否直签"] || "是").trim().toLowerCase()),
+      integrator: source["集成商"] || "",
+      deliveryPartners: String(source["交付伙伴"] || "").split(/[，,、;；]/).map((item) => item.trim()).filter(Boolean),
     };
     const missing = ["name", "account", "category", "region", "province", "city", "district", "adcode", "owner", "stage"].filter((key) => !data[key]);
     if (!/^\d{6}$/.test(data.adcode || "")) missing.push("行政区划代码格式");
@@ -55,6 +58,7 @@ export function parseImportCsv(content) {
     if (!BUSINESS_REGIONS.includes(data.region)) missing.push("经营区域取值");
     if (!STAGES.some((stage) => stage.key === data.stage)) missing.push("销售阶段取值");
     if (!HEALTH_KEYS.has(data.health)) missing.push("健康度取值");
+    if (!data.isDirectContract && !data.integrator) missing.push("非直签项目需填写集成商");
     return { row: index + 2, data, status: missing.length ? "需修正" : "通过", error: [...new Set(missing)].join("、") };
   });
 }

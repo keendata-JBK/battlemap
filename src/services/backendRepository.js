@@ -40,6 +40,9 @@ function mapProject(row) {
     source: row.source || "",
     updatedAt: formatDateTime(row.updated_at),
     risk: row.risk || "未填写",
+    isDirectContract: row.is_direct_contract !== false,
+    integrator: row.integrator || "",
+    deliveryPartners: Array.isArray(row.delivery_partners) ? row.delivery_partners : [],
     createdAt: row.created_at,
     updatedAtIso: row.updated_at,
   };
@@ -121,6 +124,9 @@ function mapAuditLog(row) {
 
 function toProjectPayload(form, customerId, ownerId, presalesId, currentUserId) {
   const coordinates = form.coordinates ?? [116.4, 39.9];
+  const deliveryPartners = Array.isArray(form.deliveryPartners)
+    ? form.deliveryPartners
+    : String(form.deliveryPartners ?? "").split(/[，,、;；]/).map((item) => item.trim()).filter(Boolean);
   return {
     customer_id: customerId,
     name: form.name,
@@ -144,6 +150,9 @@ function toProjectPayload(form, customerId, ownerId, presalesId, currentUserId) 
     expected_close: form.expectedClose || null,
     source: form.source || "手工录入",
     risk: form.risk || null,
+    is_direct_contract: form.isDirectContract !== false,
+    integrator: form.isDirectContract === false ? form.integrator?.trim() || null : null,
+    delivery_partners: deliveryPartners,
     created_by: currentUserId,
   };
 }
@@ -210,6 +219,7 @@ export async function loadBackendData() {
     { data: customerRows, error: customerError },
     { data: importRows, error: importError },
     { data: auditRows, error: auditError },
+    { data: dailyEntryRows, error: dailyEntryError },
   ] = await Promise.all([
     supabase.from("project_dashboard").select("*").order("updated_at", { ascending: false }),
     supabase.from("alerts").select("*").order("created_at", { ascending: false }),
@@ -220,6 +230,7 @@ export async function loadBackendData() {
     supabase.from("customers").select("id,name,unified_credit_code,updated_at").is("deleted_at", null),
     supabase.from("import_jobs").select("*").order("created_at", { ascending: false }).limit(100),
     supabase.from("audit_logs").select("id,table_name,record_id,action,old_data,new_data,actor_id,created_at").order("created_at", { ascending: false }).limit(200),
+    supabase.from("daily_report_entries").select("id,project_id,salesperson_id,report_date,activity_type,content,customer_contact,created_at").order("report_date", { ascending: false }).limit(2000),
   ]);
   if (projectError) throw projectError;
   if (alertError) throw alertError;
@@ -230,6 +241,7 @@ export async function loadBackendData() {
   if (customerError) throw customerError;
   if (importError) throw importError;
   if (auditError) throw auditError;
+  if (dailyEntryError) throw dailyEntryError;
 
   const customerIdsWithValidContact = new Set(
     contactRows
@@ -249,6 +261,16 @@ export async function loadBackendData() {
     customers: customerRows,
     importJobs: importRows.map(mapImportJob),
     auditLogs: auditRows.map(mapAuditLog),
+    dailyReportEntries: dailyEntryRows.map((row) => ({
+      id: row.id,
+      projectId: row.project_id,
+      salespersonId: row.salesperson_id,
+      reportDate: row.report_date,
+      activityType: row.activity_type,
+      content: row.content,
+      customerContact: row.customer_contact || "",
+      createdAt: row.created_at,
+    })),
   };
 }
 
@@ -297,11 +319,32 @@ export async function updateAlertRule(input) {
 
 export async function askMarketingData(question, history = []) {
   const { data, error } = await supabase.functions.invoke("marketing-qa", {
-    body: { question, history },
+    body: { action: "create", question, history },
   });
   if (error) throw new Error(await getFunctionErrorMessage(error));
   if (data?.error) throw new Error(data.error);
   return data;
+}
+
+export async function loadMarketingDataJob(jobId) {
+  const { data, error } = await supabase
+    .from("marketing_qa_jobs")
+    .select("id,status,answer,error_message,model,data_scope,project_count,created_at,updated_at,finished_at")
+    .eq("id", jobId)
+    .single();
+  if (error) throw error;
+  return {
+    id: data.id,
+    status: data.status,
+    answer: data.answer || "",
+    error: data.error_message || "",
+    model: data.model,
+    dataScope: data.data_scope || "当前权限数据",
+    projectCount: data.project_count ?? 0,
+    createdAt: data.created_at,
+    updatedAt: data.updated_at,
+    finishedAt: data.finished_at,
+  };
 }
 
 export async function loadWorkspaceState(stateKey) {

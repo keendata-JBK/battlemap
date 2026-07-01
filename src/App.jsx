@@ -76,6 +76,7 @@ import {
   importDailyReport,
   loadBackendData,
   loadDirectory,
+  loadMarketingDataJob,
   loadWorkspaceState,
   loadProjectActivities,
   loadProjectDailyReports,
@@ -595,6 +596,7 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
   const [regionFilter, setRegionFilter] = useState("全部区域");
   const [healthFilter, setHealthFilter] = useState("全部健康度");
   const [ownerFilter, setOwnerFilter] = useState("全部销售");
+  const [stageFilter, setStageFilter] = useState("全部节点");
   const [fullScreen, setFullScreen] = useState(false);
   const mapTransitioningRef = useRef(false);
 
@@ -630,8 +632,9 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
     if (regionFilter !== "全部区域") rows = rows.filter((project) => project.region === regionFilter);
     if (healthFilter !== "全部健康度") rows = rows.filter((project) => project.health === healthFilter);
     if (ownerFilter !== "全部销售") rows = rows.filter((project) => project.ownerId === ownerFilter);
+    if (stageFilter !== "全部节点") rows = rows.filter((project) => project.stage === stageFilter);
     return rows;
-  }, [projects, layers, search, regionMode, drillPath, regionFilter, healthFilter, ownerFilter]);
+  }, [projects, layers, search, regionMode, drillPath, regionFilter, healthFilter, ownerFilter, stageFilter]);
 
   const ownerOptions = useMemo(() => Array.from(new Map(projects.map((project) => [project.ownerId, project.owner])).entries()).sort((a, b) => a[1].localeCompare(b[1], "zh-CN")), [projects]);
 
@@ -781,8 +784,9 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
               <header><strong>组合筛选</strong><button type="button" aria-label="关闭组合筛选" onClick={() => setFiltersOpen(false)}><CloseOutlined /></button></header>
               <label>经营区域<select value={regionFilter} onChange={(event) => setRegionFilter(event.target.value)}><option>全部区域</option>{BUSINESS_REGIONS.map((region) => <option key={region}>{region}</option>)}</select></label>
               <label>销售负责人<select value={ownerFilter} onChange={(event) => setOwnerFilter(event.target.value)}><option value="全部销售">全部销售</option>{ownerOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label>
+              <label>流程节点<select value={stageFilter} onChange={(event) => setStageFilter(event.target.value)}><option value="全部节点">全部节点</option>{STAGES.map((stage) => <option key={stage.key} value={stage.key}>{stage.label}</option>)}</select></label>
               <label>项目健康度<select value={healthFilter} onChange={(event) => setHealthFilter(event.target.value)}><option>全部健康度</option><option value="green">正常</option><option value="yellow">关注</option><option value="red">高风险</option></select></label>
-              <GhostButton onClick={() => { setRegionFilter("全部区域"); setHealthFilter("全部健康度"); setOwnerFilter("全部销售"); }}>重置筛选</GhostButton>
+              <GhostButton onClick={() => { setRegionFilter("全部区域"); setHealthFilter("全部健康度"); setOwnerFilter("全部销售"); setStageFilter("全部节点"); }}>重置筛选</GhostButton>
             </div>
           )}
           {alertsOpen && (
@@ -822,6 +826,9 @@ function ProjectForm({ initialProject, onSubmit, onCancel, users = [], saving = 
     ...initialProject,
     adcode: getProjectAdcode(initialProject),
     coordinates: initialProject.coordinates ?? [120.19, 30.19],
+    isDirectContract: initialProject.isDirectContract !== false,
+    integrator: initialProject.integrator ?? "",
+    deliveryPartners: Array.isArray(initialProject.deliveryPartners) ? initialProject.deliveryPartners.join("、") : initialProject.deliveryPartners ?? "",
   } : {
     name: "",
     account: "",
@@ -846,6 +853,9 @@ function ProjectForm({ initialProject, onSubmit, onCancel, users = [], saving = 
     expectedClose: "",
     source: "手工录入",
     risk: "",
+    isDirectContract: true,
+    integrator: "",
+    deliveryPartners: "",
   });
   const [locating, setLocating] = useState(false);
   const [locationMessage, setLocationMessage] = useState("");
@@ -894,6 +904,9 @@ function ProjectForm({ initialProject, onSubmit, onCancel, users = [], saving = 
         <label>纬度<input required type="number" step="0.000001" min="3" max="54" value={form.coordinates[1]} onChange={(event) => update("coordinates", [form.coordinates[0], Number(event.target.value)])} /></label>
         <label>负责人<select required value={form.owner} onChange={(event) => update("owner", event.target.value)}>{ownerUsers.map((user) => <option key={user.id}>{user.name}</option>)}</select></label>
         <label>售前负责人<select value={form.presales} onChange={(event) => update("presales", event.target.value)}><option value="">未分配</option>{users.filter((user) => user.roleKey === "presales" || user.role === "售前").map((user) => <option key={user.id}>{user.name}</option>)}</select></label>
+        <label>是否直签<select value={form.isDirectContract ? "yes" : "no"} onChange={(event) => setForm((current) => ({ ...current, isDirectContract: event.target.value === "yes", integrator: event.target.value === "yes" ? "" : current.integrator }))}><option value="yes">是，科杰直接签约</option><option value="no">否，通过集成商签约</option></select></label>
+        {!form.isDirectContract && <label>集成商<input required value={form.integrator} onChange={(event) => update("integrator", event.target.value)} placeholder="请输入签约集成商" /></label>}
+        <label className="span-2">交付伙伴<input value={form.deliveryPartners} onChange={(event) => update("deliveryPartners", event.target.value)} placeholder="多个伙伴可用顿号或逗号分隔" /></label>
         <label>健康度<select value={form.health} onChange={(event) => update("health", event.target.value)}><option value="green">正常</option><option value="yellow">关注</option><option value="red">高风险</option><option value="gray">暂停</option></select></label>
         <label>优先级<select value={form.priority} onChange={(event) => update("priority", event.target.value)}><option>P0</option><option>P1</option><option>P2</option><option>P3</option></select></label>
         <label className="span-2">下一步动作<input value={form.nextAction} onChange={(event) => update("nextAction", event.target.value)} /></label>
@@ -1037,11 +1050,11 @@ function DetailModal({ project, onClose, onEdit, users }) {
         <section className="detail-columns">
           <div>
             <h4>推进信息</h4>
-            <dl><div><dt>下一步动作</dt><dd>{project.nextAction}</dd></div><div><dt>计划时间</dt><dd>{project.nextActionDate}</dd></div><div><dt>预计成交</dt><dd>{project.expectedClose}</dd></div><div><dt>来源</dt><dd>{project.source}</dd></div></dl>
+            <dl><div><dt>下一步动作</dt><dd>{project.nextAction}</dd></div><div><dt>计划时间</dt><dd>{project.nextActionDate}</dd></div><div><dt>预计成交</dt><dd>{project.expectedClose}</dd></div><div><dt>来源</dt><dd>{project.source}</dd></div><div><dt>签约方式</dt><dd>{project.isDirectContract ? "科杰直签" : `集成商：${project.integrator || "未填写"}`}</dd></div></dl>
           </div>
           <div>
             <h4>区域与风险</h4>
-            <dl><div><dt>经营区域</dt><dd>{project.region}</dd></div><div><dt>行政区</dt><dd>{project.province} · {project.city} · {project.district}</dd></div><div><dt>项目风险</dt><dd>{project.risk}</dd></div><div><dt>最近更新</dt><dd>{project.updatedAt}</dd></div></dl>
+            <dl><div><dt>经营区域</dt><dd>{project.region}</dd></div><div><dt>行政区</dt><dd>{project.province} · {project.city} · {project.district}</dd></div><div><dt>交付伙伴</dt><dd>{project.deliveryPartners?.length ? project.deliveryPartners.join("、") : "暂无"}</dd></div><div><dt>项目风险</dt><dd>{project.risk}</dd></div><div><dt>最近更新</dt><dd>{project.updatedAt}</dd></div></dl>
           </div>
         </section>
         <section className="timeline">
@@ -1061,12 +1074,12 @@ function DetailModal({ project, onClose, onEdit, users }) {
   );
 }
 
-function FilterBar({ filters, setFilters, owners, onCreate, onExport, resultCount }) {
+function FilterBar({ filters, setFilters, owners, onCreate, onExport, resultCount, roleKey }) {
   return (
     <div className="filter-bar">
       <label className="standard-search"><SearchOutlined /><input value={filters.search} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} placeholder="搜索项目、客户、区县" /></label>
       <select value={filters.region} onChange={(event) => setFilters((current) => ({ ...current, region: event.target.value }))}><option>全部区域</option>{BUSINESS_REGIONS.map((region) => <option key={region}>{region}</option>)}</select>
-      <select value={filters.owner} onChange={(event) => setFilters((current) => ({ ...current, owner: event.target.value }))}><option value="all">全部销售</option>{owners.map(([id, name]) => <option value={id} key={id}>{name}</option>)}</select>
+      <select disabled={roleKey === "sales"} value={filters.owner} onChange={(event) => setFilters((current) => ({ ...current, owner: event.target.value }))}><option value="all">{roleKey === "sales" ? "仅本人项目" : "全部销售"}</option>{owners.map(([id, name]) => <option value={id} key={id}>{name}</option>)}</select>
       <select value={filters.category} onChange={(event) => setFilters((current) => ({ ...current, category: event.target.value }))}><option value="all">全部类型</option>{Object.entries(CATEGORY_META).map(([key, meta]) => <option value={key} key={key}>{meta.label}</option>)}</select>
       <select value={filters.stage} onChange={(event) => setFilters((current) => ({ ...current, stage: event.target.value }))}><option value="all">全部阶段</option>{STAGES.map((stage) => <option value={stage.key} key={stage.key}>{stage.label}</option>)}</select>
       <span className="filter-result">共 {resultCount} 条</span>
@@ -1247,6 +1260,115 @@ function WeeklyUpdateView({ projects, weeklyUpdates, users, roleKey, currentUser
   );
 }
 
+function ActionCalendarView({ projects, weeklyUpdates, dailyReportEntries, users, roleKey, currentUserId, onView }) {
+  const [weekStart, setWeekStart] = useState(getWeekStart());
+  const weekDays = useMemo(() => Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(`${weekStart}T12:00:00`);
+    date.setDate(date.getDate() + index);
+    return {
+      date: dateInputValue(date),
+      label: ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][index],
+      day: `${date.getMonth() + 1}/${date.getDate()}`,
+    };
+  }), [weekStart]);
+  const dateSet = useMemo(() => new Set(weekDays.map((item) => item.date)), [weekDays]);
+  const visibleWeeklyUpdates = weeklyUpdates.filter((item) => item.weekStart === weekStart && (roleKey !== "sales" || item.ownerId === currentUserId));
+  const calendarItems = useMemo(() => {
+    const rows = [];
+    visibleWeeklyUpdates.forEach((update) => {
+      (update.actions ?? []).forEach((action) => {
+        if (!action.projectId || !dateSet.has(action.dueDate)) return;
+        rows.push({
+          id: `weekly-${update.id}-${action.id}`,
+          projectId: action.projectId,
+          date: action.dueDate,
+          content: action.title?.trim() || "未填写行动内容",
+          source: "周行动",
+          status: action.status || "planned",
+          ownerId: update.ownerId,
+        });
+      });
+    });
+    dailyReportEntries.forEach((entry) => {
+      if (!dateSet.has(entry.reportDate)) return;
+      rows.push({
+        id: `daily-${entry.id}`,
+        projectId: entry.projectId,
+        date: entry.reportDate,
+        content: entry.content,
+        source: DAILY_ACTIVITY_META[entry.activityType]?.label ?? "日报记录",
+        status: "done",
+        ownerId: entry.salespersonId,
+      });
+    });
+    projects.forEach((project) => {
+      if (!dateSet.has(project.nextActionDate) || !project.nextAction?.trim()) return;
+      rows.push({
+        id: `next-${project.id}-${project.nextActionDate}`,
+        projectId: project.id,
+        date: project.nextActionDate,
+        content: project.nextAction,
+        source: "下一步动作",
+        status: "planned",
+        ownerId: project.ownerId,
+      });
+    });
+    return rows;
+  }, [dailyReportEntries, dateSet, projects, visibleWeeklyUpdates]);
+  const projectRows = useMemo(() => projects.map((project) => {
+    const items = calendarItems.filter((item) => item.projectId === project.id);
+    return { project, items };
+  }).sort((a, b) => b.items.length - a.items.length || new Date(b.project.updatedAtIso || 0) - new Date(a.project.updatedAtIso || 0)), [calendarItems, projects]);
+  const contentProjectCount = projectRows.filter((row) => row.items.length).length;
+
+  return (
+    <div className="action-calendar-workspace">
+      <header className="action-calendar-toolbar">
+        <div>
+          <IconButton label="上一周" onClick={() => setWeekStart((current) => shiftWeek(current, -1))}><LeftOutlined /></IconButton>
+          <span><strong>{formatWeekRange(weekStart)}</strong><small>{weekStart === getWeekStart() ? "本周项目进展" : "历史周项目进展"}</small></span>
+          <IconButton label="下一周" onClick={() => setWeekStart((current) => shiftWeek(current, 1))}><RightOutlined /></IconButton>
+          {weekStart !== getWeekStart() && <GhostButton onClick={() => setWeekStart(getWeekStart())}>回到本周</GhostButton>}
+        </div>
+        <p><SafetyCertificateOutlined /> {roleKey === "sales" ? "仅展示本人项目、本人周更新和本人日报" : "展示当前权限范围内的全部项目进展"}</p>
+      </header>
+
+      <div className="action-calendar-kpis">
+        <Metric label="可见项目" value={projects.length} />
+        <Metric label="本周有进展" value={contentProjectCount} />
+        <Metric label="行动与日报" value={calendarItems.length} />
+        <Metric label="本周无内容" value={projects.length - contentProjectCount} inverse />
+      </div>
+
+      <section className="action-calendar-board">
+        <header><div><p>ACTION CALENDAR</p><h2>每周项目进展</h2><span>周行动、日报触达和下一步动作统一汇总；有内容的项目优先。</span></div><CalendarOutlined /></header>
+        <div className="action-calendar-days">
+          {weekDays.map((day) => <div key={day.date}><strong>{day.label}</strong><span>{day.day}</span><b>{calendarItems.filter((item) => item.date === day.date).length}</b></div>)}
+        </div>
+        <div className="action-calendar-projects">
+          {projectRows.map(({ project, items }) => (
+            <article className={items.length ? "has-content" : "is-empty"} key={project.id}>
+              <button type="button" className="action-calendar-project" onClick={() => onView(project)}>
+                <span className="category-badge" style={{ "--category-color": CATEGORY_META[project.category].color }}>{CATEGORY_META[project.category].label}</span>
+                <strong>{project.name}</strong>
+                <small>{project.owner} · {getStage(project.stage).label}</small>
+                <em>{items.length ? `${items.length} 条进展` : "本周暂无内容"}</em>
+              </button>
+              <div className="action-calendar-cells">
+                {weekDays.map((day) => {
+                  const dayItems = items.filter((item) => item.date === day.date);
+                  return <div key={day.date}>{dayItems.map((item) => <button type="button" key={item.id} onClick={() => onView(project)}><i className={`weekly-status weekly-status--${item.status}`} /><span><strong>{item.content}</strong><small>{item.source}{users.find((user) => user.id === item.ownerId)?.name ? ` · ${users.find((user) => user.id === item.ownerId)?.name}` : ""}</small></span></button>)}</div>;
+                })}
+              </div>
+            </article>
+          ))}
+          {!projectRows.length && <div className="empty-state"><CalendarOutlined /><strong>当前权限下暂无项目</strong><span>创建项目后将在行动日历中按周展示。</span></div>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function DailyReportImportView({ projects, users, importHistory = [], onAnalyze, onImport, onLoadDraft, onSaveDraft, onClearDraft }) {
   const salesUsers = users.filter((user) => user.roleKey === "sales");
   const [rawText, setRawText] = useState("");
@@ -1417,12 +1539,15 @@ function DailyReportImportView({ projects, users, importHistory = [], onAnalyze,
   );
 }
 
-function WorkbenchPage({ projects, weeklyUpdates, dailyReportImports, users, roleKey, currentUserId, currentUserName, onSaveWeekly, onAnalyzeDailyReport, onImportDailyReport, onLoadDailyDraft, onSaveDailyDraft, onClearDailyDraft, onCreate, onView, onEdit, onDelete, onBulkDelete }) {
+function WorkbenchPage({ projects, weeklyUpdates, dailyReportImports, dailyReportEntries, users, roleKey, currentUserId, currentUserName, onSaveWeekly, onAnalyzeDailyReport, onImportDailyReport, onLoadDailyDraft, onSaveDailyDraft, onClearDailyDraft, onCreate, onView, onEdit, onDelete, onBulkDelete }) {
   const [view, setView] = useState("table");
   const [selectedIds, setSelectedIds] = useState([]);
   const [filters, setFilters] = useState({ search: "", region: "全部区域", owner: "all", category: "all", stage: "all" });
-  const ownerOptions = useMemo(() => Array.from(new Map(projects.map((project) => [project.ownerId, project.owner])).entries()).sort((a, b) => a[1].localeCompare(b[1], "zh-CN")), [projects]);
-  const filtered = projects.filter((project) => {
+  const scopedProjects = roleKey === "sales" ? projects.filter((project) => project.ownerId === currentUserId) : projects;
+  const scopedWeeklyUpdates = roleKey === "sales" ? weeklyUpdates.filter((item) => item.ownerId === currentUserId) : weeklyUpdates;
+  const scopedDailyEntries = roleKey === "sales" ? dailyReportEntries.filter((item) => item.salespersonId === currentUserId && scopedProjects.some((project) => project.id === item.projectId)) : dailyReportEntries;
+  const ownerOptions = useMemo(() => Array.from(new Map(scopedProjects.map((project) => [project.ownerId, project.owner])).entries()).sort((a, b) => a[1].localeCompare(b[1], "zh-CN")), [scopedProjects]);
+  const filtered = scopedProjects.filter((project) => {
     const keyword = filters.search.trim().toLowerCase();
     if (keyword && ![project.name, project.account, project.city, project.district].join(" ").toLowerCase().includes(keyword)) return false;
     if (filters.region !== "全部区域" && project.region !== filters.region) return false;
@@ -1432,37 +1557,45 @@ function WorkbenchPage({ projects, weeklyUpdates, dailyReportImports, users, rol
     return true;
   });
 
-  const handleExport = () => exportCsv("营销作战地图_项目清单.csv", filtered, [
+  const handleExport = () => exportCsv("营销作战地图_项目清单.csv", filtered.map((project) => ({
+    ...project,
+    isDirectContract: project.isDirectContract ? "是" : "否",
+    deliveryPartners: project.deliveryPartners?.join("、") || "",
+  })), [
     { key: "id", label: "项目编号" }, { key: "name", label: "项目名称" }, { key: "account", label: "客户" },
     { key: "region", label: "区域" }, { key: "province", label: "省份" }, { key: "city", label: "城市" },
     { key: "district", label: "区县" }, { key: "amount", label: "金额（万元）" }, { key: "owner", label: "负责人" },
+    { key: "isDirectContract", label: "是否直签" }, { key: "integrator", label: "集成商" }, { key: "deliveryPartners", label: "交付伙伴" },
   ]);
 
   return (
     <div className="standard-page">
-      <PageHeader eyebrow="MULTI-DIMENSIONAL WORKBENCH" title="数据工作台" description="像多维表格一样定位、筛选和推进所有营销项目" actions={<PrimaryButton onClick={onCreate}><PlusOutlined /> 新建项目</PrimaryButton>} />
+      <PageHeader eyebrow="MULTI-DIMENSIONAL WORKBENCH" title="数据工作台" description={roleKey === "sales" ? "仅展示本人负责项目、周更新、日报与行动日历" : "像多维表格一样定位、筛选和推进所有营销项目"} actions={<PrimaryButton onClick={onCreate}><PlusOutlined /> 新建项目</PrimaryButton>} />
       <section className="view-strip">
-        <div>{[{ key: "table", label: "表格", icon: TableOutlined }, { key: "kanban", label: "阶段看板", icon: AppstoreOutlined }, { key: "calendar", label: "周行动更新", icon: CalendarOutlined }, ...(roleKey === "admin" ? [{ key: "daily-report", label: "日报导入", icon: FileTextOutlined }] : [])].map((item) => { const Icon = item.icon; return <button key={item.key} type="button" className={view === item.key ? "is-active" : ""} onClick={() => setView(item.key)}><Icon />{item.label}</button>; })}</div>
-        <span>当前视图：<strong>{view === "daily-report" ? "销售日报智能导入" : view === "calendar" ? "销售周行动更新" : "全部项目作战总表"}</strong></span>
+        <div>{[{ key: "table", label: "表格", icon: TableOutlined }, { key: "kanban", label: "阶段看板", icon: AppstoreOutlined }, { key: "weekly-update", label: "周行动更新", icon: EditOutlined }, { key: "action-calendar", label: "行动日历", icon: CalendarOutlined }, ...(roleKey === "admin" ? [{ key: "daily-report", label: "日报导入", icon: FileTextOutlined }] : [])].map((item) => { const Icon = item.icon; return <button key={item.key} type="button" className={view === item.key ? "is-active" : ""} onClick={() => setView(item.key)}><Icon />{item.label}</button>; })}</div>
+        <span>当前视图：<strong>{{ table: "项目作战总表", kanban: "销售阶段看板", "weekly-update": "销售周行动更新", "action-calendar": "每周项目进展", "daily-report": "销售日报智能导入" }[view]}</strong></span>
       </section>
-      {view !== "daily-report" && <FilterBar filters={filters} setFilters={setFilters} owners={ownerOptions} onCreate={onCreate} onExport={handleExport} resultCount={filtered.length} />}
+      {["table", "kanban"].includes(view) && <FilterBar filters={filters} setFilters={setFilters} owners={ownerOptions} onCreate={onCreate} onExport={handleExport} resultCount={filtered.length} roleKey={roleKey} />}
       {selectedIds.length > 0 && <div className="bulk-bar"><span>已选择 <strong>{selectedIds.length}</strong> 条记录</span><GhostButton onClick={() => setSelectedIds([])}>取消选择</GhostButton><GhostButton className="danger-button" onClick={() => { onBulkDelete(selectedIds); setSelectedIds([]); }}><DeleteOutlined /> 批量删除</GhostButton></div>}
       {view === "table" && <ProjectTable projects={filtered} selectedIds={selectedIds} setSelectedIds={setSelectedIds} onView={onView} onEdit={onEdit} onDelete={onDelete} />}
       {view === "kanban" && <KanbanView projects={filtered} onView={onView} />}
-      {view === "calendar" && <WeeklyUpdateView projects={projects} weeklyUpdates={weeklyUpdates} users={users} roleKey={roleKey} currentUserId={currentUserId} currentUserName={currentUserName} onSave={onSaveWeekly} onView={onView} />}
-      {view === "daily-report" && roleKey === "admin" && <DailyReportImportView projects={projects} users={users} importHistory={dailyReportImports} onAnalyze={onAnalyzeDailyReport} onImport={onImportDailyReport} onLoadDraft={onLoadDailyDraft} onSaveDraft={onSaveDailyDraft} onClearDraft={onClearDailyDraft} />}
+      {view === "weekly-update" && <WeeklyUpdateView projects={scopedProjects} weeklyUpdates={scopedWeeklyUpdates} users={users} roleKey={roleKey} currentUserId={currentUserId} currentUserName={currentUserName} onSave={onSaveWeekly} onView={onView} />}
+      {view === "action-calendar" && <ActionCalendarView projects={scopedProjects} weeklyUpdates={scopedWeeklyUpdates} dailyReportEntries={scopedDailyEntries} users={users} roleKey={roleKey} currentUserId={currentUserId} onView={onView} />}
+      {view === "daily-report" && roleKey === "admin" && <DailyReportImportView projects={scopedProjects} users={users} importHistory={dailyReportImports} onAnalyze={onAnalyzeDailyReport} onImport={onImportDailyReport} onLoadDraft={onLoadDailyDraft} onSaveDraft={onSaveDailyDraft} onClearDraft={onClearDailyDraft} />}
     </div>
   );
 }
 
 const SMART_QUERY_GREETING = { role: "assistant", content: "可以直接问我区域、项目阶段、金额、负责人、风险、提醒和本周行动，我会按你的数据权限实时查询。" };
 
-function SmartQueryPanel({ onAsk, onLoadHistory, onSaveHistory, onClearHistory, projectCount, roleKey }) {
+function SmartQueryPanel({ onAsk, onLoadJob, onLoadHistory, onSaveHistory, onClearHistory, projectCount, roleKey }) {
   const [messages, setMessages] = useState([SMART_QUERY_GREETING]);
   const [question, setQuestion] = useState("");
-  const [asking, setAsking] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [activeJobId, setActiveJobId] = useState(null);
   const [historyStatus, setHistoryStatus] = useState("正在读取账号会话");
   const historySaveQueueRef = useRef(Promise.resolve());
+  const asking = submitting || Boolean(activeJobId);
   const suggested = ["哪些项目客户触达很多但仍未成单？", "赢单项目前平均需要多少次客户触达？", "按负责人分析加权管道和风险", "总结本周销售行动和需要领导支持的事项"];
 
   useEffect(() => {
@@ -1471,7 +1604,11 @@ function SmartQueryPanel({ onAsk, onLoadHistory, onSaveHistory, onClearHistory, 
       .then((saved) => {
         if (!active) return;
         const savedMessages = Array.isArray(saved?.messages) ? saved.messages.filter((item) => item?.role && item?.content).slice(-40) : [];
-        if (savedMessages.length) setMessages(savedMessages);
+        if (savedMessages.length) {
+          setMessages(savedMessages);
+          const pending = [...savedMessages].reverse().find((item) => item.jobId && ["pending", "processing"].includes(item.status));
+          if (pending) setActiveJobId(pending.jobId);
+        }
         setHistoryStatus(savedMessages.length ? `已恢复 ${savedMessages.length} 条账号会话` : "会话已绑定当前账号");
       })
       .catch(() => {
@@ -1481,11 +1618,55 @@ function SmartQueryPanel({ onAsk, onLoadHistory, onSaveHistory, onClearHistory, 
   }, [onLoadHistory]);
 
   const persistMessages = async (nextMessages) => {
-    const normalized = nextMessages.slice(-40).map(({ role, content, meta, error }) => ({ role, content, meta: meta || "", error: Boolean(error) }));
+    const normalized = nextMessages.slice(-40).map(({ role, content, meta, error, jobId, status }) => ({ role, content, meta: meta || "", error: Boolean(error), jobId: jobId || "", status: status || "" }));
     historySaveQueueRef.current = historySaveQueueRef.current.catch(() => undefined).then(() => onSaveHistory(normalized));
     await historySaveQueueRef.current;
     setHistoryStatus("对话已保存到当前账号");
   };
+
+  useEffect(() => {
+    if (!activeJobId) return undefined;
+    let cancelled = false;
+    let timer = null;
+    const startedAt = Date.now();
+    const finishJob = (job, failed = false) => {
+      setMessages((current) => {
+        const finalMessages = current.map((item) => item.jobId === activeJobId ? {
+          role: "assistant",
+          content: failed ? job.error || "智能问数任务执行失败，请重新提交。" : job.answer,
+          meta: failed ? "异步任务失败" : `${job.model} · ${job.dataScope} · ${job.projectCount} 个项目 · 异步任务已完成`,
+          error: failed,
+          jobId: activeJobId,
+          status: failed ? "failed" : "completed",
+        } : item);
+        persistMessages(finalMessages).catch(() => setHistoryStatus(failed ? "失败记录暂未同步" : "回答成功，但会话同步失败"));
+        return finalMessages;
+      });
+      setActiveJobId(null);
+    };
+    const poll = async () => {
+      try {
+        const job = await onLoadJob(activeJobId);
+        if (cancelled) return;
+        if (job.status === "completed") return finishJob(job);
+        if (job.status === "failed") return finishJob(job, true);
+        if (Date.now() - startedAt > 180000) {
+          setMessages((current) => current.map((item) => item.jobId === activeJobId ? { ...item, content: "任务仍在后台执行，可以稍后返回本页面查看结果。", meta: "异步任务处理中", status: job.status } : item));
+          setActiveJobId(null);
+          return;
+        }
+        setMessages((current) => current.map((item) => item.jobId === activeJobId ? { ...item, content: job.status === "processing" ? "GPT-5.5 正在后台分析营销数据，可以离开页面，完成后会保存到当前账号。" : "任务已进入队列，正在等待后台执行。", meta: job.status === "processing" ? "后台分析中" : "等待执行", status: job.status } : item));
+        timer = window.setTimeout(poll, 2500);
+      } catch {
+        if (!cancelled) timer = window.setTimeout(poll, 4000);
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [activeJobId, onLoadJob]);
 
   const submitQuestion = async (value = question) => {
     const content = value.trim();
@@ -1493,19 +1674,20 @@ function SmartQueryPanel({ onAsk, onLoadHistory, onSaveHistory, onClearHistory, 
     const nextMessages = [...messages, { role: "user", content }];
     setMessages(nextMessages);
     setQuestion("");
-    setAsking(true);
-    persistMessages(nextMessages).catch(() => setHistoryStatus("当前问题暂未同步，回答后将重试"));
+    setSubmitting(true);
+    persistMessages(nextMessages).catch(() => setHistoryStatus("当前问题暂未同步，任务提交后将重试"));
     try {
       const result = await onAsk(content, messages);
-      const finalMessages = [...nextMessages, { role: "assistant", content: result.answer, meta: `${result.model} · ${result.dataScope} · ${result.projectCount} 个项目` }];
-      setMessages(finalMessages);
-      persistMessages(finalMessages).catch(() => setHistoryStatus("回答成功，但会话同步失败"));
+      const pendingMessages = [...nextMessages, { role: "assistant", content: "任务已进入队列，正在等待后台执行。", meta: "异步任务已提交", jobId: result.jobId, status: result.status || "pending" }];
+      setMessages(pendingMessages);
+      await persistMessages(pendingMessages);
+      setActiveJobId(result.jobId);
     } catch (error) {
-      const finalMessages = [...nextMessages, { role: "assistant", content: error.message || "智能问数暂时不可用，请稍后重试。", error: true }];
+      const finalMessages = [...nextMessages, { role: "assistant", content: error.message || "智能问数任务提交失败，请稍后重试。", error: true }];
       setMessages(finalMessages);
       persistMessages(finalMessages).catch(() => setHistoryStatus("会话保存失败，请稍后重试"));
     } finally {
-      setAsking(false);
+      setSubmitting(false);
     }
   };
 
@@ -1519,14 +1701,14 @@ function SmartQueryPanel({ onAsk, onLoadHistory, onSaveHistory, onClearHistory, 
   return (
     <article className="smart-query-card">
       <header>
-        <div className="smart-query-title"><i><RobotOutlined /></i><div><p>MARKETING DATA COPILOT</p><h2>智能问数</h2><span>GPT-5.5 实时读取当前权限下的营销地图数据</span></div></div>
+        <div className="smart-query-title"><i><RobotOutlined /></i><div><p>MARKETING DATA COPILOT</p><h2>智能问数</h2><span>GPT-5.5 异步读取当前权限下的营销地图数据</span></div></div>
         <div className="smart-query-account"><div className="smart-query-scope"><SafetyCertificateOutlined /><span><strong>{roleKey === "sales" ? "本人数据" : "全部可见数据"}</strong><small>{projectCount} 个项目 · {historyStatus}</small></span></div><button type="button" disabled={asking || messages.length <= 1} onClick={clearHistory}>清空对话</button></div>
       </header>
       <div className="smart-query-layout">
         <section className="smart-chat">
           <div className="smart-chat__messages">
             {messages.map((message, index) => <div className={`smart-message smart-message--${message.role} ${message.error ? "smart-message--error" : ""}`} key={`${message.role}-${index}`}><span>{message.role === "assistant" ? <RobotOutlined /> : <UserOutlined />}</span><div>{message.role === "assistant" ? <div className="smart-message__markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div> : <p>{message.content}</p>}{message.meta && <small>{message.meta}</small>}</div></div>)}
-            {asking && <div className="smart-message smart-message--assistant"><span><RobotOutlined /></span><div><p><LoadingOutlined spin /> 正在读取最新营销数据并分析……</p></div></div>}
+            {submitting && <div className="smart-message smart-message--assistant"><span><RobotOutlined /></span><div><p><LoadingOutlined spin /> 正在创建异步问数任务……</p></div></div>}
           </div>
           <form className="smart-chat__composer" onSubmit={(event) => { event.preventDefault(); submitQuestion(); }}>
             <textarea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="例如：华东区域本季度有哪些高价值项目存在延期风险？" />
@@ -1535,7 +1717,7 @@ function SmartQueryPanel({ onAsk, onLoadHistory, onSaveHistory, onClearHistory, 
         </section>
         <aside className="smart-query-suggestions">
           <strong>推荐问题</strong>
-          <span>基于经营管理常用分析口径</span>
+          <span>任务在后台运行，切换页面或刷新不会丢失</span>
           <div>{suggested.map((item) => <button type="button" key={item} disabled={asking} onClick={() => submitQuestion(item)}>{item}<RightOutlined /></button>)}</div>
           <footer><InfoCircleOutlined /><p>回答仅基于数据库当前记录，包含已确认入库的日报触达。历史数据不足时会明确提示统计边界。</p></footer>
         </aside>
@@ -1544,7 +1726,7 @@ function SmartQueryPanel({ onAsk, onLoadHistory, onSaveHistory, onClearHistory, 
   );
 }
 
-function AnalysisPage({ projects, roleKey, onAsk, onLoadHistory, onSaveHistory, onClearHistory }) {
+function AnalysisPage({ projects, roleKey, onAsk, onLoadJob, onLoadHistory, onSaveHistory, onClearHistory }) {
   const total = projects.reduce((sum, project) => sum + project.amount, 0);
   const weighted = projects.reduce((sum, project) => sum + project.amount * getStage(project.stage).probability / 100, 0);
   const highRisk = projects.filter((project) => project.health === "red").length;
@@ -1569,7 +1751,7 @@ function AnalysisPage({ projects, roleKey, onAsk, onLoadHistory, onSaveHistory, 
   return (
     <div className="standard-page analysis-page">
       <PageHeader eyebrow="EXECUTIVE BUSINESS INTELLIGENCE" title="BI 分析" description={`统一口径洞察区域、阶段、客户和销售经营表现 · ${new Date().getFullYear()} 年`} actions={<PrimaryButton onClick={() => window.print()}><DownloadOutlined /> 导出经营报告</PrimaryButton>} />
-      <SmartQueryPanel onAsk={onAsk} onLoadHistory={onLoadHistory} onSaveHistory={onSaveHistory} onClearHistory={onClearHistory} projectCount={projects.length} roleKey={roleKey} />
+      <SmartQueryPanel onAsk={onAsk} onLoadJob={onLoadJob} onLoadHistory={onLoadHistory} onSaveHistory={onSaveHistory} onClearHistory={onClearHistory} projectCount={projects.length} roleKey={roleKey} />
       <div className="analysis-kpis">
         <Metric label="商机总额（万元）" value={formatMoney(total)} />
         <Metric label="加权管道（万元）" value={formatMoney(weighted)} />
@@ -1656,7 +1838,7 @@ function ManagementPage({ projects, operations, users, roleKey, onCreate, onImpo
     const keys = new Set([...Object.keys(log.oldData ?? {}), ...Object.keys(log.newData ?? {})]);
     return [...keys].filter((key) => JSON.stringify(log.oldData?.[key]) !== JSON.stringify(log.newData?.[key])).join("、") || "无字段差异";
   };
-  const templateHeaders = [{ key: "name", label: "项目名称" }, { key: "account", label: "客户主体" }, { key: "contactName", label: "关键联系人" }, { key: "contactMobile", label: "联系人手机号" }, { key: "contactEmail", label: "联系人邮箱" }, { key: "category", label: "项目类型" }, { key: "region", label: "经营区域" }, { key: "province", label: "省份" }, { key: "city", label: "城市" }, { key: "district", label: "区县" }, { key: "adcode", label: "行政区划代码" }, { key: "longitude", label: "经度" }, { key: "latitude", label: "纬度" }, { key: "amount", label: "金额（万元）" }, { key: "owner", label: "负责人" }, { key: "presales", label: "售前负责人" }, { key: "stage", label: "销售阶段" }, { key: "health", label: "健康度" }, { key: "priority", label: "优先级" }, { key: "nextAction", label: "下一步动作" }, { key: "nextActionDate", label: "计划日期" }, { key: "expectedClose", label: "预计成交日期" }, { key: "source", label: "数据来源" }, { key: "risk", label: "风险说明" }];
+  const templateHeaders = [{ key: "name", label: "项目名称" }, { key: "account", label: "客户主体" }, { key: "contactName", label: "关键联系人" }, { key: "contactMobile", label: "联系人手机号" }, { key: "contactEmail", label: "联系人邮箱" }, { key: "category", label: "项目类型" }, { key: "region", label: "经营区域" }, { key: "province", label: "省份" }, { key: "city", label: "城市" }, { key: "district", label: "区县" }, { key: "adcode", label: "行政区划代码" }, { key: "longitude", label: "经度" }, { key: "latitude", label: "纬度" }, { key: "amount", label: "金额（万元）" }, { key: "owner", label: "负责人" }, { key: "presales", label: "售前负责人" }, { key: "stage", label: "销售阶段" }, { key: "health", label: "健康度" }, { key: "priority", label: "优先级" }, { key: "是否直签", label: "是否直签" }, { key: "集成商", label: "集成商" }, { key: "交付伙伴", label: "交付伙伴" }, { key: "nextAction", label: "下一步动作" }, { key: "nextActionDate", label: "计划日期" }, { key: "expectedClose", label: "预计成交日期" }, { key: "source", label: "数据来源" }, { key: "risk", label: "风险说明" }];
   const downloadTemplate = () => exportCsv("营销作战地图_导入模板.csv", [], templateHeaders);
   const exportAuditLogs = () => exportCsv("营销作战地图_审计日志.csv", operations.auditLogs.map((log) => ({
     time: formatDateTime(log.createdAt), table: log.table, record: log.recordId, action: log.action,
@@ -1805,7 +1987,7 @@ export function App() {
   const auth = useAuth();
   const [backendProjects, setBackendProjects] = useState([]);
   const [backendAlerts, setBackendAlerts] = useState([]);
-  const [operations, setOperations] = useState({ customers: [], importJobs: [], auditLogs: [], weeklyUpdates: [], alertRules: [], dailyReportImports: [] });
+  const [operations, setOperations] = useState({ customers: [], importJobs: [], auditLogs: [], weeklyUpdates: [], alertRules: [], dailyReportImports: [], dailyReportEntries: [] });
   const [directoryUsers, setDirectoryUsers] = useState([]);
   const [dataLoading, setDataLoading] = useState(true);
   const [dataError, setDataError] = useState("");
@@ -1830,7 +2012,7 @@ export function App() {
   const applyBackendData = useCallback((data) => {
     setBackendProjects(data.projects);
     setBackendAlerts(data.alerts);
-    setOperations({ customers: data.customers, importJobs: data.importJobs, auditLogs: data.auditLogs, weeklyUpdates: data.weeklyUpdates, alertRules: data.alertRules, dailyReportImports: data.dailyReportImports ?? [] });
+    setOperations({ customers: data.customers, importJobs: data.importJobs, auditLogs: data.auditLogs, weeklyUpdates: data.weeklyUpdates, alertRules: data.alertRules, dailyReportImports: data.dailyReportImports ?? [], dailyReportEntries: data.dailyReportEntries ?? [] });
   }, []);
 
   const refreshBackendData = useCallback(async () => {
@@ -1987,8 +2169,8 @@ export function App() {
   const page = (() => {
     switch (activePage) {
       case "map": return <MapPage projects={visibleProjects} alerts={alerts} roleKey={roleKey} currentUserName={currentUser.display_name} selectedProjectId={selectedProjectId} onSelectProject={setSelectedProjectId} onGoToProject={setDetailProject} onOpenAlerts={() => setActivePage("alerts")} onRefresh={refreshBackendData} />;
-      case "workbench": return <WorkbenchPage projects={visibleProjects} weeklyUpdates={operations.weeklyUpdates} dailyReportImports={operations.dailyReportImports} users={directoryUsers} roleKey={roleKey} currentUserId={auth.session.user.id} currentUserName={currentUser.display_name} onSaveWeekly={saveSalesWeek} onAnalyzeDailyReport={analyzeSalesDailyReport} onImportDailyReport={saveSalesDailyReport} onLoadDailyDraft={loadDailyReportDraft} onSaveDailyDraft={saveDailyReportDraft} onClearDailyDraft={clearDailyReportDraft} onCreate={openCreate} onView={setDetailProject} onEdit={openEdit} onDelete={setDeleteTarget} onBulkDelete={setBulkDeleteIds} />;
-      case "analysis": return <AnalysisPage projects={visibleProjects} roleKey={roleKey} onAsk={askMarketingData} onLoadHistory={loadMarketingHistory} onSaveHistory={saveMarketingHistory} onClearHistory={clearMarketingHistory} />;
+      case "workbench": return <WorkbenchPage projects={visibleProjects} weeklyUpdates={operations.weeklyUpdates} dailyReportImports={operations.dailyReportImports} dailyReportEntries={operations.dailyReportEntries} users={directoryUsers} roleKey={roleKey} currentUserId={auth.session.user.id} currentUserName={currentUser.display_name} onSaveWeekly={saveSalesWeek} onAnalyzeDailyReport={analyzeSalesDailyReport} onImportDailyReport={saveSalesDailyReport} onLoadDailyDraft={loadDailyReportDraft} onSaveDailyDraft={saveDailyReportDraft} onClearDailyDraft={clearDailyReportDraft} onCreate={openCreate} onView={setDetailProject} onEdit={openEdit} onDelete={setDeleteTarget} onBulkDelete={setBulkDeleteIds} />;
+      case "analysis": return <AnalysisPage projects={visibleProjects} roleKey={roleKey} onAsk={askMarketingData} onLoadJob={loadMarketingDataJob} onLoadHistory={loadMarketingHistory} onSaveHistory={saveMarketingHistory} onClearHistory={clearMarketingHistory} />;
       case "management": return <ManagementPage projects={visibleProjects} operations={operations} users={directoryUsers} roleKey={roleKey} onCreate={openCreate} onImportOpen={() => setImportOpen(true)} onRefresh={refreshBackendData} />;
       case "alerts": return <AlertsPage alerts={alerts} setAlerts={applyAlertUpdate} alertRules={operations.alertRules} roleKey={roleKey} projects={visibleProjects} onViewProject={setDetailProject} onUpdateRule={saveAlertRule} onRefresh={refreshBackendData} />;
       case "system": return <SystemPage roleKey={roleKey} onToast={notify} initialUsers={directoryUsers} onInviteUser={inviteUser} onToggleUser={toggleUser} />;
