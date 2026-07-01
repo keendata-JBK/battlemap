@@ -1352,6 +1352,16 @@ function DailyReportImportView({ projects, users, importHistory = [], onAnalyze,
     }
   };
 
+  const discardDraft = async () => {
+    await draftSaveQueueRef.current.catch(() => undefined);
+    await onClearDraft();
+    setRawText("");
+    setEntries([]);
+    setWarnings([]);
+    setError("");
+    setDraftStatus("暂无未提交草稿");
+  };
+
   return (
     <div className="daily-import-workspace">
       <section className="daily-import-source">
@@ -1360,7 +1370,7 @@ function DailyReportImportView({ projects, users, importHistory = [], onAnalyze,
           <div className="daily-import-date"><span>默认日报日期</span><input type="date" value={defaultDate} onChange={(event) => setDefaultDate(event.target.value)} /></div>
         </header>
         <textarea value={rawText} onChange={(event) => setRawText(event.target.value)} placeholder={'可直接粘贴微信群日报、邮件日报或汇总文字。\n例如：\n张三：上午拜访某客户，沟通数据平台方案；下午电话跟进另一项目采购进度。\n李四：与客户召开需求评审会，下一步完善技术方案。'} />
-        <footer><span><SafetyCertificateOutlined /> {draftStatus}</span><PrimaryButton disabled={analyzing || !rawText.trim()} onClick={analyze}>{analyzing ? <LoadingOutlined spin /> : <RobotOutlined />} {analyzing ? "正在识别销售与项目" : "第 1 步：识别并生成候选"}</PrimaryButton></footer>
+        <footer><span><SafetyCertificateOutlined /> {draftStatus}</span><div className="daily-import-actions"><GhostButton disabled={analyzing || (!rawText && !entries.length)} onClick={discardDraft}>清空草稿</GhostButton><PrimaryButton disabled={analyzing || !rawText.trim()} onClick={analyze}>{analyzing ? <LoadingOutlined spin /> : <RobotOutlined />} {analyzing ? "正在识别销售与项目" : "第 1 步：识别并生成候选"}</PrimaryButton></div></footer>
       </section>
 
       {error && <div className="daily-import-message daily-import-message--error"><WarningFilled /><span>{error}</span></div>}

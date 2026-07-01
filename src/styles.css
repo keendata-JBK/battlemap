@@ -3897,6 +3897,7 @@ button:disabled {
 }
 
 .daily-import-source > footer > span { display: flex; align-items: center; gap: 6px; }
+.daily-import-actions { display: flex; align-items: center; gap: 8px; }
 
 .daily-import-message {
   display: flex;
