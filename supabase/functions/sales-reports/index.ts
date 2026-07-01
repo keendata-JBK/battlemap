@@ -112,36 +112,85 @@ async function processReport(
     const dailyEntries = dailyResult.data ?? [];
     const weeklyUpdates = weeklyResult.data ?? [];
     const dataScope = canViewAll ? "全部可见数据" : "本人负责项目";
-
-    const systemPrompt = `你是科杰科技销售 Agent（By Keenclaw）。请根据真实营销数据生成${reportType === "weekly" ? "周报" : "月报"}。必须客观、可追溯，不得编造数据。
-
-报告必须覆盖：当前项目行动、项目问题、热项目、冷项目、Agent 分析、下一步建议。热项目要综合阶段、近期客户行动、下一步动作和预计成交判断；冷项目要综合长期未更新、缺少行动、风险、延期判断。赢单和丢单是终态。
-
-只返回 JSON：
-{"executiveSummary":"管理摘要","metrics":{"projectCount":0,"totalAmount":0,"weightedPipeline":0,"actionCount":0,"wonCount":0,"lostCount":0},"currentActions":[{"projectName":"","owner":"","stage":"","action":"","date":"","progress":""}],"projectIssues":[{"projectName":"","issue":"","impact":""}],"hotProjects":[{"projectName":"","amount":0,"stage":"","reason":""}],"coldProjects":[{"projectName":"","amount":0,"stage":"","reason":""}],"agentAnalysis":"综合分析","nextSuggestions":["建议"]}`;
-    const modelResponse = await fetchWithTimeout(`${gatewayBaseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${gatewayKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "gpt-5.5",
-        store: false,
-        reasoning_effort: "medium",
-        max_completion_tokens: 10000,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: `报告标题：${title}\n报告周期：${periodStart} 至 ${periodEnd}\n数据范围：${dataScope}\n项目：${JSON.stringify(projects)}\n日报行动：${JSON.stringify(dailyEntries)}\n周更新：${JSON.stringify(weeklyUpdates)}` },
-        ],
-      }),
-    }, 140000);
-    if (!modelResponse.ok) {
-      const message = (await modelResponse.text()).slice(0, 500);
-      if (modelResponse.status === 429 && message.includes("API_KEY_QUOTA_EXHAUSTED")) throw new Error("模型接口额度已用完，请管理员在 KeenRouter 提高额度后重试。");
-      if (modelResponse.status === 401 && message.includes("API_KEY_DISABLED")) throw new Error("模型接口密钥已被 KeenRouter 禁用，请管理员重新启用或更换密钥。");
-      throw new Error(`模型服务调用失败（${modelResponse.status}）：${message}`);
+    const projectById = new Map(projects.map((project) => [project.id, project]));
+    const actionCountByProject = new Map<string, number>();
+    dailyEntries.forEach((entry) => actionCountByProject.set(entry.project_id, (actionCountByProject.get(entry.project_id) ?? 0) + 1));
+    const terminalStages = new Set(["won", "lost"]);
+    const activeProjects = projects.filter((project) => !terminalStages.has(project.stage));
+    const stageScore: Record<string, number> = { lead: 1, discovery: 2, solution: 4, negotiation: 6, contract: 8 };
+    const periodEndTime = new Date(`${periodEnd}T23:59:59+08:00`).getTime();
+    const staleDays = (project: Record<string, unknown>) => Math.max(0, Math.floor((periodEndTime - new Date(String(project.updated_at)).getTime()) / 86400000));
+    const hotProjects = [...activeProjects]
+      .sort((a, b) => ((stageScore[b.stage] ?? 0) * 10 + (actionCountByProject.get(b.id) ?? 0) * 5 + Number(b.amount) / 1000) - ((stageScore[a.stage] ?? 0) * 10 + (actionCountByProject.get(a.id) ?? 0) * 5 + Number(a.amount) / 1000))
+      .slice(0, 8)
+      .map((project) => ({ projectName: project.name, amount: Number(project.amount), stage: project.stage, reason: `${project.stage === "contract" || project.stage === "negotiation" ? "处于高转化阶段" : "处于持续推进阶段"}，本期客户行动 ${actionCountByProject.get(project.id) ?? 0} 次${project.next_action ? `，下一步为“${project.next_action}”` : ""}` }));
+    const coldProjects = [...activeProjects]
+      .sort((a, b) => (staleDays(b) + ((actionCountByProject.get(b.id) ?? 0) ? 0 : 20) + (b.next_action ? 0 : 10)) - (staleDays(a) + ((actionCountByProject.get(a.id) ?? 0) ? 0 : 20) + (a.next_action ? 0 : 10)))
+      .slice(0, 8)
+      .map((project) => ({ projectName: project.name, amount: Number(project.amount), stage: project.stage, reason: `已 ${staleDays(project)} 天未更新，本期客户行动 ${actionCountByProject.get(project.id) ?? 0} 次${project.next_action ? "" : "，且未填写下一步动作"}` }));
+    const currentActions = [
+      ...projects.filter((project) => project.next_action).map((project) => ({ projectName: project.name, owner: project.owner_name, stage: project.stage, action: project.next_action, date: project.next_action_date || "", progress: "项目下一步动作" })),
+      ...dailyEntries.map((entry) => ({ projectName: projectById.get(entry.project_id)?.name ?? "未匹配项目", owner: projectById.get(entry.project_id)?.owner_name ?? "", stage: projectById.get(entry.project_id)?.stage ?? "", action: entry.content, date: entry.report_date, progress: "已记录客户行动" })),
+    ].slice(0, 30);
+    const projectIssues = activeProjects.filter((project) => project.health === "red" || project.health === "yellow" || (project.risk && !["暂无重大风险", "未填写", "暂无"].includes(project.risk)) || (project.expected_close && project.expected_close < periodEnd)).slice(0, 20).map((project) => ({
+      projectName: project.name,
+      issue: project.risk && !["暂无重大风险", "未填写", "暂无"].includes(project.risk) ? project.risk : project.expected_close && project.expected_close < periodEnd ? `预计成交日期 ${project.expected_close} 已过期` : `项目健康度为 ${project.health}`,
+      impact: project.stage === "contract" || project.stage === "negotiation" ? "影响近期签约预测" : "可能降低后续转化效率",
+    }));
+    const metrics = {
+      projectCount: projects.length,
+      totalAmount: Math.round(projects.reduce((sum, project) => sum + Number(project.amount || 0), 0)),
+      weightedPipeline: Math.round(projects.reduce((sum, project) => sum + Number(project.amount || 0) * Number(project.probability || 0) / 100, 0)),
+      actionCount: dailyEntries.length,
+      wonCount: projects.filter((project) => project.stage === "won").length,
+      lostCount: projects.filter((project) => project.stage === "lost").length,
+    };
+    const baseContent: Record<string, unknown> = {
+      executiveSummary: `本期共跟踪 ${metrics.projectCount} 个项目，商机总额 ${metrics.totalAmount} 万元，加权管道 ${metrics.weightedPipeline} 万元；记录客户行动 ${metrics.actionCount} 次，识别热项目 ${hotProjects.length} 个、需重点唤醒的冷项目 ${coldProjects.length} 个。`,
+      metrics,
+      currentActions,
+      projectIssues,
+      hotProjects,
+      coldProjects,
+      agentAnalysis: `当前管道以 ${hotProjects.slice(0, 3).map((item) => item.projectName).join("、") || "暂无明确热项目"} 为优先推进对象；${coldProjects.length ? `同时有 ${coldProjects.length} 个冷项目需要补充客户行动和下一步计划。` : "当前没有明显冷项目。"}`,
+      nextSuggestions: [
+        "优先核实合同签订、招投标阶段项目的决策链、预算和明确签约日期。",
+        "对本期无客户行动或未填写下一步动作的项目安排责任人和完成时限。",
+        "对预计成交日期已过期的项目重新评估概率，必要时转为丢单并记录原因。",
+      ],
+    };
+    let content = baseContent;
+    try {
+      const modelResponse = await fetchWithTimeout(`${gatewayBaseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${gatewayKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          store: false,
+          reasoning_effort: "low",
+          max_completion_tokens: 2500,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: "你是科杰科技销售 Agent（By Keenclaw）。基于给定的规则分析结果，补充更凝练的管理摘要、Agent 分析和下一步建议。不得修改指标，不得编造项目。只返回 JSON：{\"executiveSummary\":\"\",\"agentAnalysis\":\"\",\"nextSuggestions\":[\"\"]}" },
+            { role: "user", content: JSON.stringify({ title, periodStart, periodEnd, dataScope, metrics, hotProjects, coldProjects, projectIssues, currentActions: currentActions.slice(0, 15), weeklyUpdates }) },
+          ],
+        }),
+      }, 55000);
+      if (modelResponse.ok) {
+        const modelData = await modelResponse.json();
+        const agentContent = parseModelJson(modelData?.choices?.[0]?.message?.content ?? modelData?.output_text) as Record<string, unknown>;
+        content = {
+          ...baseContent,
+          executiveSummary: agentContent.executiveSummary || baseContent.executiveSummary,
+          agentAnalysis: agentContent.agentAnalysis || baseContent.agentAnalysis,
+          nextSuggestions: array(agentContent.nextSuggestions).length ? agentContent.nextSuggestions : baseContent.nextSuggestions,
+        };
+      } else {
+        content = { ...baseContent, agentAnalysis: `${baseContent.agentAnalysis} 本次大模型增强暂不可用，报告已使用实时数据规则分析完成。` };
+      }
+    } catch {
+      content = { ...baseContent, agentAnalysis: `${baseContent.agentAnalysis} 本次大模型增强响应超时，报告已使用实时数据规则分析完成。` };
     }
-    const modelData = await modelResponse.json();
-    const content = parseModelJson(modelData?.choices?.[0]?.message?.content ?? modelData?.output_text) as Record<string, unknown>;
     const markdown = reportMarkdown(title, content);
     const { error: updateError } = await adminClient.from("sales_reports").update({
       status: "completed",
