@@ -51,4 +51,11 @@ describe("parseImportCsv", () => {
     expect(row.status).toBe("需修正");
     expect(row.error).toContain("非直签项目需填写集成商");
   });
+
+  it("accepts lost projects as a terminal sales stage", () => {
+    const csv = `${headers}\n丢单项目,测试客户,,,,单体项目,华东区域,江苏,南京,玄武区,320102,118.7977,32.0486,200,测试用户,,丢单,P2,,,`;
+    const [row] = parseImportCsv(csv);
+    expect(row.status).toBe("通过");
+    expect(row.data.stage).toBe("lost");
+  });
 });

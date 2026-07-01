@@ -140,7 +140,7 @@ function toProjectPayload(form, customerId, ownerId, presalesId, currentUserId) 
     latitude: Number(coordinates[1]),
     amount: Number(form.amount),
     stage: form.stage,
-    probability: { lead: 5, discovery: 20, solution: 50, negotiation: 80, contract: 90, won: 100 }[form.stage] ?? 5,
+    probability: { lead: 5, discovery: 20, solution: 50, negotiation: 80, contract: 90, won: 100, lost: 0 }[form.stage] ?? 5,
     owner_id: ownerId,
     presales_id: presalesId,
     health: form.health,
@@ -220,6 +220,7 @@ export async function loadBackendData() {
     { data: importRows, error: importError },
     { data: auditRows, error: auditError },
     { data: dailyEntryRows, error: dailyEntryError },
+    { data: salesReportRows, error: salesReportError },
   ] = await Promise.all([
     supabase.from("project_dashboard").select("*").order("updated_at", { ascending: false }),
     supabase.from("alerts").select("*").order("created_at", { ascending: false }),
@@ -231,6 +232,7 @@ export async function loadBackendData() {
     supabase.from("import_jobs").select("*").order("created_at", { ascending: false }).limit(100),
     supabase.from("audit_logs").select("id,table_name,record_id,action,old_data,new_data,actor_id,created_at").order("created_at", { ascending: false }).limit(200),
     supabase.from("daily_report_entries").select("id,project_id,salesperson_id,report_date,activity_type,content,customer_contact,created_at").order("report_date", { ascending: false }).limit(2000),
+    supabase.from("sales_reports").select("id,requester_id,report_type,period_start,period_end,title,status,content,markdown,error_message,model,data_scope,project_count,generated_automatically,created_at,updated_at,finished_at").order("period_end", { ascending: false }).limit(50),
   ]);
   if (projectError) throw projectError;
   if (alertError) throw alertError;
@@ -242,6 +244,7 @@ export async function loadBackendData() {
   if (importError) throw importError;
   if (auditError) throw auditError;
   if (dailyEntryError) throw dailyEntryError;
+  if (salesReportError) throw salesReportError;
 
   const customerIdsWithValidContact = new Set(
     contactRows
@@ -271,6 +274,29 @@ export async function loadBackendData() {
       customerContact: row.customer_contact || "",
       createdAt: row.created_at,
     })),
+    salesReports: salesReportRows.map(mapSalesReport),
+  };
+}
+
+function mapSalesReport(row) {
+  return {
+    id: row.id,
+    requesterId: row.requester_id,
+    reportType: row.report_type,
+    periodStart: row.period_start,
+    periodEnd: row.period_end,
+    title: row.title,
+    status: row.status,
+    content: row.content || null,
+    markdown: row.markdown || "",
+    error: row.error_message || "",
+    model: row.model,
+    dataScope: row.data_scope || "当前权限数据",
+    projectCount: row.project_count ?? 0,
+    generatedAutomatically: Boolean(row.generated_automatically),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    finishedAt: row.finished_at,
   };
 }
 
@@ -379,6 +405,44 @@ export async function analyzeDailyReport(rawText, defaultDate) {
   if (error) throw new Error(await getFunctionErrorMessage(error));
   if (data?.error) throw new Error(data.error);
   return data;
+}
+
+export async function loadDailyReportAnalysisJob(jobId) {
+  const { data, error } = await supabase
+    .from("daily_report_analysis_jobs")
+    .select("id,status,result,error_message,model,created_at,updated_at,finished_at")
+    .eq("id", jobId)
+    .single();
+  if (error) throw error;
+  return {
+    id: data.id,
+    status: data.status,
+    result: data.result || null,
+    error: data.error_message || "",
+    model: data.model,
+    createdAt: data.created_at,
+    updatedAt: data.updated_at,
+    finishedAt: data.finished_at,
+  };
+}
+
+export async function createSalesReport(reportType) {
+  const { data, error } = await supabase.functions.invoke("sales-reports", {
+    body: { action: "create", reportType },
+  });
+  if (error) throw new Error(await getFunctionErrorMessage(error));
+  if (data?.error) throw new Error(data.error);
+  return data;
+}
+
+export async function loadSalesReport(reportId) {
+  const { data, error } = await supabase
+    .from("sales_reports")
+    .select("id,requester_id,report_type,period_start,period_end,title,status,content,markdown,error_message,model,data_scope,project_count,generated_automatically,created_at,updated_at,finished_at")
+    .eq("id", reportId)
+    .single();
+  if (error) throw error;
+  return mapSalesReport(data);
 }
 
 export async function importDailyReport(rawText, defaultDate, entries) {

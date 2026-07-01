@@ -32,3 +32,6 @@ verify_jwt = true
 
 [functions.daily-report]
 verify_jwt = true
+
+[functions.sales-reports]
+verify_jwt = false

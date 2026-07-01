@@ -69,14 +69,18 @@ import {
   resolveAdministrativeLocation,
 } from "./services/mapService.js";
 import { parseImportCsv } from "./services/importService.js";
+import { downloadSalesReportPdf } from "./services/reportPdf.js";
 import {
   askMarketingData,
   analyzeDailyReport,
+  createSalesReport,
   createBackendUser,
   importDailyReport,
   loadBackendData,
   loadDirectory,
   loadMarketingDataJob,
+  loadDailyReportAnalysisJob,
+  loadSalesReport,
   loadWorkspaceState,
   loadProjectActivities,
   loadProjectDailyReports,
@@ -393,7 +397,7 @@ function MapCommandPanel({
   onRefresh,
   dataUpdatedAt,
 }) {
-  const activeProjects = projects.filter((project) => project.stage !== "won");
+  const activeProjects = projects.filter((project) => !["won", "lost"].includes(project.stage));
   const highValue = projects.filter((project) => project.amount >= 5000).length;
   const expected = projects.reduce((sum, project) => sum + project.amount * (getStage(project.stage).probability / 100), 0);
   const won = projects.filter((project) => project.stage === "won").length;
@@ -1121,7 +1125,7 @@ function ProjectTable({ projects, selectedIds, setSelectedIds, onView, onEdit, o
 function KanbanView({ projects, onView }) {
   return (
     <div className="kanban-board">
-      {STAGES.slice(0, 5).map((stage) => {
+      {STAGES.map((stage) => {
         const rows = projects.filter((project) => project.stage === stage.key);
         return (
           <section key={stage.key}>
@@ -1369,13 +1373,14 @@ function ActionCalendarView({ projects, weeklyUpdates, dailyReportEntries, users
   );
 }
 
-function DailyReportImportView({ projects, users, importHistory = [], onAnalyze, onImport, onLoadDraft, onSaveDraft, onClearDraft }) {
+function DailyReportImportView({ projects, users, importHistory = [], onAnalyze, onLoadAnalysisJob, onImport, onLoadDraft, onSaveDraft, onClearDraft }) {
   const salesUsers = users.filter((user) => user.roleKey === "sales");
   const [rawText, setRawText] = useState("");
   const [defaultDate, setDefaultDate] = useState(dateInputValue(new Date()));
   const [entries, setEntries] = useState([]);
   const [warnings, setWarnings] = useState([]);
   const [analyzing, setAnalyzing] = useState(false);
+  const [analysisJobId, setAnalysisJobId] = useState(null);
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState("");
   const [draftReady, setDraftReady] = useState(false);
@@ -1392,6 +1397,10 @@ function DailyReportImportView({ projects, users, importHistory = [], onAnalyze,
         setDefaultDate(saved.defaultDate ?? dateInputValue(new Date()));
         setEntries(Array.isArray(saved.entries) ? saved.entries : []);
         setWarnings(Array.isArray(saved.warnings) ? saved.warnings : []);
+        if (saved.analysisJobId) {
+          setAnalysisJobId(saved.analysisJobId);
+          setAnalyzing(true);
+        }
         setDraftStatus("已恢复账号草稿");
       })
       .catch(() => {
@@ -1411,13 +1420,49 @@ function DailyReportImportView({ projects, users, importHistory = [], onAnalyze,
       const hasDraft = Boolean(rawText.trim() || entries.length);
       draftSaveQueueRef.current = draftSaveQueueRef.current
         .catch(() => undefined)
-        .then(() => hasDraft ? onSaveDraft({ rawText, defaultDate, entries, warnings }) : onClearDraft());
+        .then(() => hasDraft ? onSaveDraft({ rawText, defaultDate, entries, warnings, analysisJobId }) : onClearDraft());
       draftSaveQueueRef.current
         .then(() => { if (draftWriteIdRef.current === writeId) setDraftStatus(hasDraft ? "草稿已自动保存到当前账号" : "暂无未提交草稿"); })
         .catch(() => { if (draftWriteIdRef.current === writeId) setDraftStatus("草稿自动保存失败"); });
     }, 700);
     return () => window.clearTimeout(timer);
-  }, [defaultDate, draftReady, entries, onClearDraft, onSaveDraft, rawText, warnings]);
+  }, [analysisJobId, defaultDate, draftReady, entries, onClearDraft, onSaveDraft, rawText, warnings]);
+
+  useEffect(() => {
+    if (!analysisJobId) return undefined;
+    let cancelled = false;
+    let timer = null;
+    const poll = async () => {
+      try {
+        const job = await onLoadAnalysisJob(analysisJobId);
+        if (cancelled) return;
+        if (job.status === "completed") {
+          const result = job.result ?? {};
+          setEntries((result.entries ?? []).map((entry) => ({ ...entry, selected: Boolean(entry.salespersonId && entry.projectId) })));
+          setWarnings(result.warnings ?? []);
+          setAnalysisJobId(null);
+          setAnalyzing(false);
+          setDraftStatus("日报识别完成，候选记录已保存到当前账号");
+          return;
+        }
+        if (job.status === "failed") {
+          setError(job.error || "日报识别任务失败，请重新提交。");
+          setAnalysisJobId(null);
+          setAnalyzing(false);
+          return;
+        }
+        setDraftStatus(job.status === "processing" ? "GPT-5.5 正在后台识别日报，离开页面不会丢失" : "日报识别任务已进入队列");
+        timer = window.setTimeout(poll, 2500);
+      } catch {
+        if (!cancelled) timer = window.setTimeout(poll, 4000);
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [analysisJobId, onLoadAnalysisJob]);
 
   const selectedEntries = entries.filter((entry) => entry.selected);
   const readyEntries = selectedEntries.filter((entry) => entry.salespersonId && entry.projectId && entry.content.trim());
@@ -1430,11 +1475,10 @@ function DailyReportImportView({ projects, users, importHistory = [], onAnalyze,
     setError("");
     try {
       const result = await onAnalyze(rawText, defaultDate);
-      setEntries((result.entries ?? []).map((entry) => ({ ...entry, selected: Boolean(entry.salespersonId && entry.projectId) })));
-      setWarnings(result.warnings ?? []);
+      setAnalysisJobId(result.jobId);
+      setDraftStatus("日报识别任务已提交，正在后台处理");
     } catch (analysisError) {
       setError(analysisError.message || "日报识别失败");
-    } finally {
       setAnalyzing(false);
     }
   };
@@ -1480,6 +1524,8 @@ function DailyReportImportView({ projects, users, importHistory = [], onAnalyze,
     setRawText("");
     setEntries([]);
     setWarnings([]);
+    setAnalysisJobId(null);
+    setAnalyzing(false);
     setError("");
     setDraftStatus("暂无未提交草稿");
   };
@@ -1539,7 +1585,7 @@ function DailyReportImportView({ projects, users, importHistory = [], onAnalyze,
   );
 }
 
-function WorkbenchPage({ projects, weeklyUpdates, dailyReportImports, dailyReportEntries, users, roleKey, currentUserId, currentUserName, onSaveWeekly, onAnalyzeDailyReport, onImportDailyReport, onLoadDailyDraft, onSaveDailyDraft, onClearDailyDraft, onCreate, onView, onEdit, onDelete, onBulkDelete }) {
+function WorkbenchPage({ projects, weeklyUpdates, dailyReportImports, dailyReportEntries, users, roleKey, currentUserId, currentUserName, onSaveWeekly, onAnalyzeDailyReport, onLoadDailyReportJob, onImportDailyReport, onLoadDailyDraft, onSaveDailyDraft, onClearDailyDraft, onCreate, onView, onEdit, onDelete, onBulkDelete }) {
   const [view, setView] = useState("table");
   const [selectedIds, setSelectedIds] = useState([]);
   const [filters, setFilters] = useState({ search: "", region: "全部区域", owner: "all", category: "all", stage: "all" });
@@ -1581,22 +1627,59 @@ function WorkbenchPage({ projects, weeklyUpdates, dailyReportImports, dailyRepor
       {view === "kanban" && <KanbanView projects={filtered} onView={onView} />}
       {view === "weekly-update" && <WeeklyUpdateView projects={scopedProjects} weeklyUpdates={scopedWeeklyUpdates} users={users} roleKey={roleKey} currentUserId={currentUserId} currentUserName={currentUserName} onSave={onSaveWeekly} onView={onView} />}
       {view === "action-calendar" && <ActionCalendarView projects={scopedProjects} weeklyUpdates={scopedWeeklyUpdates} dailyReportEntries={scopedDailyEntries} users={users} roleKey={roleKey} currentUserId={currentUserId} onView={onView} />}
-      {view === "daily-report" && roleKey === "admin" && <DailyReportImportView projects={scopedProjects} users={users} importHistory={dailyReportImports} onAnalyze={onAnalyzeDailyReport} onImport={onImportDailyReport} onLoadDraft={onLoadDailyDraft} onSaveDraft={onSaveDailyDraft} onClearDraft={onClearDailyDraft} />}
+      {view === "daily-report" && roleKey === "admin" && <DailyReportImportView projects={scopedProjects} users={users} importHistory={dailyReportImports} onAnalyze={onAnalyzeDailyReport} onLoadAnalysisJob={onLoadDailyReportJob} onImport={onImportDailyReport} onLoadDraft={onLoadDailyDraft} onSaveDraft={onSaveDailyDraft} onClearDraft={onClearDailyDraft} />}
     </div>
   );
 }
 
-const SMART_QUERY_GREETING = { role: "assistant", content: "可以直接问我区域、项目阶段、金额、负责人、风险、提醒和本周行动，我会按你的数据权限实时查询。" };
+const SMART_QUERY_GREETING = { role: "assistant", content: "我是销售 Agent（By Keenclaw）。可以直接问我区域、项目阶段、金额、负责人、风险、提醒和销售行动，我会按你的数据权限实时分析。" };
 
-function SmartQueryPanel({ onAsk, onLoadJob, onLoadHistory, onSaveHistory, onClearHistory, projectCount, roleKey }) {
+function SmartQueryPanel({ onAsk, onLoadJob, onLoadHistory, onSaveHistory, onClearHistory, onCreateReport, onLoadReport, onRefreshReports, reports = [], projectCount, roleKey }) {
   const [messages, setMessages] = useState([SMART_QUERY_GREETING]);
   const [question, setQuestion] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [activeJobId, setActiveJobId] = useState(null);
   const [historyStatus, setHistoryStatus] = useState("正在读取账号会话");
+  const [reportItems, setReportItems] = useState(reports);
+  const [activeReportIds, setActiveReportIds] = useState(() => reports.filter((item) => ["pending", "processing"].includes(item.status)).map((item) => item.id));
+  const [reportSubmitting, setReportSubmitting] = useState("");
+  const [reportError, setReportError] = useState("");
+  const [pdfDownloading, setPdfDownloading] = useState("");
   const historySaveQueueRef = useRef(Promise.resolve());
   const asking = submitting || Boolean(activeJobId);
   const suggested = ["哪些项目客户触达很多但仍未成单？", "赢单项目前平均需要多少次客户触达？", "按负责人分析加权管道和风险", "总结本周销售行动和需要领导支持的事项"];
+
+  useEffect(() => {
+    setReportItems(reports);
+    setActiveReportIds((current) => Array.from(new Set([...current, ...reports.filter((item) => ["pending", "processing"].includes(item.status)).map((item) => item.id)])));
+  }, [reports]);
+
+  useEffect(() => {
+    if (!activeReportIds.length) return undefined;
+    let cancelled = false;
+    let timer = null;
+    const poll = async () => {
+      const settled = await Promise.allSettled(activeReportIds.map((id) => onLoadReport(id)));
+      if (cancelled) return;
+      const updated = settled.filter((item) => item.status === "fulfilled").map((item) => item.value);
+      setReportItems((current) => {
+        const byId = new Map(current.map((item) => [item.id, item]));
+        updated.forEach((item) => byId.set(item.id, item));
+        return Array.from(byId.values()).sort((a, b) => String(b.periodEnd).localeCompare(String(a.periodEnd)));
+      });
+      const pendingIds = updated.filter((item) => ["pending", "processing"].includes(item.status)).map((item) => item.id);
+      const failedLoads = activeReportIds.filter((id) => !updated.some((item) => item.id === id));
+      const nextIds = Array.from(new Set([...pendingIds, ...failedLoads]));
+      setActiveReportIds(nextIds);
+      if (updated.some((item) => ["completed", "failed"].includes(item.status))) onRefreshReports().catch(() => undefined);
+      if (nextIds.length) timer = window.setTimeout(poll, 3000);
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [activeReportIds.join("|"), onLoadReport, onRefreshReports]);
 
   useEffect(() => {
     let active = true;
@@ -1633,7 +1716,7 @@ function SmartQueryPanel({ onAsk, onLoadJob, onLoadHistory, onSaveHistory, onCle
       setMessages((current) => {
         const finalMessages = current.map((item) => item.jobId === activeJobId ? {
           role: "assistant",
-          content: failed ? job.error || "智能问数任务执行失败，请重新提交。" : job.answer,
+          content: failed ? job.error || "销售 Agent 任务执行失败，请重新提交。" : job.answer,
           meta: failed ? "异步任务失败" : `${job.model} · ${job.dataScope} · ${job.projectCount} 个项目 · 异步任务已完成`,
           error: failed,
           jobId: activeJobId,
@@ -1683,7 +1766,7 @@ function SmartQueryPanel({ onAsk, onLoadJob, onLoadHistory, onSaveHistory, onCle
       await persistMessages(pendingMessages);
       setActiveJobId(result.jobId);
     } catch (error) {
-      const finalMessages = [...nextMessages, { role: "assistant", content: error.message || "智能问数任务提交失败，请稍后重试。", error: true }];
+      const finalMessages = [...nextMessages, { role: "assistant", content: error.message || "销售 Agent 任务提交失败，请稍后重试。", error: true }];
       setMessages(finalMessages);
       persistMessages(finalMessages).catch(() => setHistoryStatus("会话保存失败，请稍后重试"));
     } finally {
@@ -1698,10 +1781,46 @@ function SmartQueryPanel({ onAsk, onLoadJob, onLoadHistory, onSaveHistory, onCle
     setHistoryStatus("账号会话已清空");
   };
 
+  const generateReport = async (reportType) => {
+    setReportSubmitting(reportType);
+    setReportError("");
+    try {
+      const task = await onCreateReport(reportType);
+      const pending = {
+        id: task.reportId,
+        reportType,
+        periodStart: task.periodStart,
+        periodEnd: task.periodEnd,
+        title: task.title,
+        status: task.status || "pending",
+        content: null,
+        generatedAutomatically: false,
+      };
+      setReportItems((current) => [pending, ...current.filter((item) => item.id !== pending.id)]);
+      setActiveReportIds((current) => Array.from(new Set([...current, task.reportId])));
+    } catch (error) {
+      setReportError(error.message || "销售报告任务创建失败");
+    } finally {
+      setReportSubmitting("");
+    }
+  };
+
+  const downloadReport = async (report) => {
+    setPdfDownloading(report.id);
+    setReportError("");
+    try {
+      await downloadSalesReportPdf(report);
+    } catch (error) {
+      setReportError(error.message || "PDF 生成失败");
+    } finally {
+      setPdfDownloading("");
+    }
+  };
+
   return (
     <article className="smart-query-card">
       <header>
-        <div className="smart-query-title"><i><RobotOutlined /></i><div><p>MARKETING DATA COPILOT</p><h2>智能问数</h2><span>GPT-5.5 异步读取当前权限下的营销地图数据</span></div></div>
+        <div className="smart-query-title"><i><RobotOutlined /></i><div><p>KEENCLAW SALES INTELLIGENCE</p><h2>销售 Agent <small>By Keenclaw</small></h2><span>GPT-5.5 异步分析当前权限下的营销地图数据</span></div></div>
         <div className="smart-query-account"><div className="smart-query-scope"><SafetyCertificateOutlined /><span><strong>{roleKey === "sales" ? "本人数据" : "全部可见数据"}</strong><small>{projectCount} 个项目 · {historyStatus}</small></span></div><button type="button" disabled={asking || messages.length <= 1} onClick={clearHistory}>清空对话</button></div>
       </header>
       <div className="smart-query-layout">
@@ -1719,14 +1838,24 @@ function SmartQueryPanel({ onAsk, onLoadJob, onLoadHistory, onSaveHistory, onCle
           <strong>推荐问题</strong>
           <span>任务在后台运行，切换页面或刷新不会丢失</span>
           <div>{suggested.map((item) => <button type="button" key={item} disabled={asking} onClick={() => submitQuestion(item)}>{item}<RightOutlined /></button>)}</div>
+          <section className="sales-report-actions">
+            <strong>自动经营报告</strong>
+            <span>每周最后一天生成周报，每月最后一天生成月报</span>
+            <div><button type="button" disabled={Boolean(reportSubmitting)} onClick={() => generateReport("weekly")}>{reportSubmitting === "weekly" ? <LoadingOutlined spin /> : <FileTextOutlined />} 生成本周周报</button><button type="button" disabled={Boolean(reportSubmitting)} onClick={() => generateReport("monthly")}>{reportSubmitting === "monthly" ? <LoadingOutlined spin /> : <FileTextOutlined />} 生成本月月报</button></div>
+          </section>
           <footer><InfoCircleOutlined /><p>回答仅基于数据库当前记录，包含已确认入库的日报触达。历史数据不足时会明确提示统计边界。</p></footer>
         </aside>
       </div>
+      {reportError && <div className="sales-report-error"><WarningFilled /> {reportError}</div>}
+      <section className="sales-report-history">
+        <header><div><p>WEEKLY & MONTHLY REPORTS</p><h3>销售经营报告</h3><span>覆盖项目行动、项目问题、热项目、冷项目、Agent 分析和下一步建议</span></div><em>{reportItems.length} 份</em></header>
+        {reportItems.length ? <div className="sales-report-list">{reportItems.slice(0, 8).map((report) => <article key={report.id} className={`sales-report-item sales-report-item--${report.status}`}><div><span>{report.reportType === "monthly" ? "月报" : "周报"}{report.generatedAutomatically ? " · 自动生成" : " · 手动生成"}</span><strong>{report.title}</strong><small>{report.status === "completed" ? `${report.dataScope} · ${report.projectCount} 个项目` : report.status === "failed" ? report.error : "销售 Agent 正在后台生成，离开页面不会丢失"}</small></div><div>{report.status === "processing" || report.status === "pending" ? <LoadingOutlined spin /> : report.status === "failed" ? <WarningFilled /> : <button type="button" disabled={pdfDownloading === report.id} onClick={() => downloadReport(report)}>{pdfDownloading === report.id ? <LoadingOutlined spin /> : <DownloadOutlined />} 下载 PDF</button>}</div>{report.status === "completed" && report.content?.executiveSummary && <p>{report.content.executiveSummary}</p>}</article>)}</div> : <div className="sales-report-empty"><FileTextOutlined /><span>尚未生成销售周报或月报</span></div>}
+      </section>
     </article>
   );
 }
 
-function AnalysisPage({ projects, roleKey, onAsk, onLoadJob, onLoadHistory, onSaveHistory, onClearHistory }) {
+function AnalysisPage({ projects, roleKey, reports, onAsk, onLoadJob, onLoadHistory, onSaveHistory, onClearHistory, onCreateReport, onLoadReport, onRefreshReports }) {
   const total = projects.reduce((sum, project) => sum + project.amount, 0);
   const weighted = projects.reduce((sum, project) => sum + project.amount * getStage(project.stage).probability / 100, 0);
   const highRisk = projects.filter((project) => project.health === "red").length;
@@ -1741,7 +1870,7 @@ function AnalysisPage({ projects, roleKey, onAsk, onLoadJob, onLoadHistory, onSa
     deadline.setHours(23, 59, 59, 999);
     deadline.setDate(deadline.getDate() + days);
     return projects
-      .filter((project) => project.stage !== "won" && project.expectedClose && new Date(project.expectedClose) <= deadline)
+      .filter((project) => !["won", "lost"].includes(project.stage) && project.expectedClose && new Date(project.expectedClose) <= deadline)
       .reduce((sum, project) => sum + project.amount * getStage(project.stage).probability / 100, 0);
   });
 
@@ -1751,11 +1880,11 @@ function AnalysisPage({ projects, roleKey, onAsk, onLoadJob, onLoadHistory, onSa
   return (
     <div className="standard-page analysis-page">
       <PageHeader eyebrow="EXECUTIVE BUSINESS INTELLIGENCE" title="BI 分析" description={`统一口径洞察区域、阶段、客户和销售经营表现 · ${new Date().getFullYear()} 年`} actions={<PrimaryButton onClick={() => window.print()}><DownloadOutlined /> 导出经营报告</PrimaryButton>} />
-      <SmartQueryPanel onAsk={onAsk} onLoadJob={onLoadJob} onLoadHistory={onLoadHistory} onSaveHistory={onSaveHistory} onClearHistory={onClearHistory} projectCount={projects.length} roleKey={roleKey} />
+      <SmartQueryPanel onAsk={onAsk} onLoadJob={onLoadJob} onLoadHistory={onLoadHistory} onSaveHistory={onSaveHistory} onClearHistory={onClearHistory} onCreateReport={onCreateReport} onLoadReport={onLoadReport} onRefreshReports={onRefreshReports} reports={reports} projectCount={projects.length} roleKey={roleKey} />
       <div className="analysis-kpis">
         <Metric label="商机总额（万元）" value={formatMoney(total)} />
         <Metric label="加权管道（万元）" value={formatMoney(weighted)} />
-        <Metric label="活跃项目" value={projects.filter((project) => !["won"].includes(project.stage)).length} />
+        <Metric label="活跃项目" value={projects.filter((project) => !["won", "lost"].includes(project.stage)).length} />
         <Metric label="红色风险" value={highRisk} inverse />
       </div>
       <div className="dashboard-grid">
@@ -1987,7 +2116,7 @@ export function App() {
   const auth = useAuth();
   const [backendProjects, setBackendProjects] = useState([]);
   const [backendAlerts, setBackendAlerts] = useState([]);
-  const [operations, setOperations] = useState({ customers: [], importJobs: [], auditLogs: [], weeklyUpdates: [], alertRules: [], dailyReportImports: [], dailyReportEntries: [] });
+  const [operations, setOperations] = useState({ customers: [], importJobs: [], auditLogs: [], weeklyUpdates: [], alertRules: [], dailyReportImports: [], dailyReportEntries: [], salesReports: [] });
   const [directoryUsers, setDirectoryUsers] = useState([]);
   const [dataLoading, setDataLoading] = useState(true);
   const [dataError, setDataError] = useState("");
@@ -2012,7 +2141,7 @@ export function App() {
   const applyBackendData = useCallback((data) => {
     setBackendProjects(data.projects);
     setBackendAlerts(data.alerts);
-    setOperations({ customers: data.customers, importJobs: data.importJobs, auditLogs: data.auditLogs, weeklyUpdates: data.weeklyUpdates, alertRules: data.alertRules, dailyReportImports: data.dailyReportImports ?? [], dailyReportEntries: data.dailyReportEntries ?? [] });
+    setOperations({ customers: data.customers, importJobs: data.importJobs, auditLogs: data.auditLogs, weeklyUpdates: data.weeklyUpdates, alertRules: data.alertRules, dailyReportImports: data.dailyReportImports ?? [], dailyReportEntries: data.dailyReportEntries ?? [], salesReports: data.salesReports ?? [] });
   }, []);
 
   const refreshBackendData = useCallback(async () => {
@@ -2169,8 +2298,8 @@ export function App() {
   const page = (() => {
     switch (activePage) {
       case "map": return <MapPage projects={visibleProjects} alerts={alerts} roleKey={roleKey} currentUserName={currentUser.display_name} selectedProjectId={selectedProjectId} onSelectProject={setSelectedProjectId} onGoToProject={setDetailProject} onOpenAlerts={() => setActivePage("alerts")} onRefresh={refreshBackendData} />;
-      case "workbench": return <WorkbenchPage projects={visibleProjects} weeklyUpdates={operations.weeklyUpdates} dailyReportImports={operations.dailyReportImports} dailyReportEntries={operations.dailyReportEntries} users={directoryUsers} roleKey={roleKey} currentUserId={auth.session.user.id} currentUserName={currentUser.display_name} onSaveWeekly={saveSalesWeek} onAnalyzeDailyReport={analyzeSalesDailyReport} onImportDailyReport={saveSalesDailyReport} onLoadDailyDraft={loadDailyReportDraft} onSaveDailyDraft={saveDailyReportDraft} onClearDailyDraft={clearDailyReportDraft} onCreate={openCreate} onView={setDetailProject} onEdit={openEdit} onDelete={setDeleteTarget} onBulkDelete={setBulkDeleteIds} />;
-      case "analysis": return <AnalysisPage projects={visibleProjects} roleKey={roleKey} onAsk={askMarketingData} onLoadJob={loadMarketingDataJob} onLoadHistory={loadMarketingHistory} onSaveHistory={saveMarketingHistory} onClearHistory={clearMarketingHistory} />;
+      case "workbench": return <WorkbenchPage projects={visibleProjects} weeklyUpdates={operations.weeklyUpdates} dailyReportImports={operations.dailyReportImports} dailyReportEntries={operations.dailyReportEntries} users={directoryUsers} roleKey={roleKey} currentUserId={auth.session.user.id} currentUserName={currentUser.display_name} onSaveWeekly={saveSalesWeek} onAnalyzeDailyReport={analyzeSalesDailyReport} onLoadDailyReportJob={loadDailyReportAnalysisJob} onImportDailyReport={saveSalesDailyReport} onLoadDailyDraft={loadDailyReportDraft} onSaveDailyDraft={saveDailyReportDraft} onClearDailyDraft={clearDailyReportDraft} onCreate={openCreate} onView={setDetailProject} onEdit={openEdit} onDelete={setDeleteTarget} onBulkDelete={setBulkDeleteIds} />;
+      case "analysis": return <AnalysisPage projects={visibleProjects} roleKey={roleKey} reports={operations.salesReports} onAsk={askMarketingData} onLoadJob={loadMarketingDataJob} onLoadHistory={loadMarketingHistory} onSaveHistory={saveMarketingHistory} onClearHistory={clearMarketingHistory} onCreateReport={createSalesReport} onLoadReport={loadSalesReport} onRefreshReports={refreshBackendData} />;
       case "management": return <ManagementPage projects={visibleProjects} operations={operations} users={directoryUsers} roleKey={roleKey} onCreate={openCreate} onImportOpen={() => setImportOpen(true)} onRefresh={refreshBackendData} />;
       case "alerts": return <AlertsPage alerts={alerts} setAlerts={applyAlertUpdate} alertRules={operations.alertRules} roleKey={roleKey} projects={visibleProjects} onViewProject={setDetailProject} onUpdateRule={saveAlertRule} onRefresh={refreshBackendData} />;
       case "system": return <SystemPage roleKey={roleKey} onToast={notify} initialUsers={directoryUsers} onInviteUser={inviteUser} onToggleUser={toggleUser} />;

@@ -13,6 +13,7 @@ export const STAGES = [
   { key: "negotiation", label: "招投标", probability: 80 },
   { key: "contract", label: "合同签订", probability: 90 },
   { key: "won", label: "赢单", probability: 100 },
+  { key: "lost", label: "丢单", probability: 0 },
 ];
 
 export const BUSINESS_REGIONS = ["华东区域", "西南区域", "北京区域", "其他区域"];

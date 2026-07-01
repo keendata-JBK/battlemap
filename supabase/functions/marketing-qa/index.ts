@@ -132,7 +132,7 @@ async function processJob(
     const timedOut = error instanceof DOMException && error.name === "AbortError";
     await adminClient.from("marketing_qa_jobs").update({
       status: "failed",
-      error_message: timedOut ? "GPT-5.5 分析超过 140 秒，请缩小问题范围后重试。" : error instanceof Error ? error.message.slice(0, 1000) : "智能问数任务执行失败",
+      error_message: timedOut ? "GPT-5.5 分析超过 140 秒，请缩小问题范围后重试。" : error instanceof Error ? error.message.slice(0, 1000) : "销售 Agent 任务执行失败",
       finished_at: new Date().toISOString(),
     }).eq("id", jobId);
   }
@@ -148,7 +148,7 @@ Deno.serve(async (request) => {
   const gatewayKey = Deno.env.get("KEENROUTER_API_KEY");
   const gatewayBaseUrl = (Deno.env.get("KEENROUTER_BASE_URL") ?? "http://router.keendata.net:5343/v1").replace(/\/$/, "");
   const authorization = request.headers.get("Authorization") ?? "";
-  if (!gatewayKey) return jsonResponse({ error: "智能问数服务尚未配置模型密钥" }, 503);
+  if (!gatewayKey) return jsonResponse({ error: "销售 Agent 尚未配置模型密钥" }, 503);
 
   const callerClient = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authorization } } });
   const { data: { user }, error: userError } = await callerClient.auth.getUser();
