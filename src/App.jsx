@@ -69,6 +69,7 @@ import {
   resolveAdministrativeLocation,
 } from "./services/mapService.js";
 import { parseImportCsv } from "./services/importService.js";
+import { sortProjectLedger } from "./services/projectLedger.js";
 import { downloadSalesReportPdf } from "./services/reportPdf.js";
 import {
   askMarketingData,
@@ -1602,8 +1603,9 @@ function WorkbenchPage({ projects, weeklyUpdates, dailyReportImports, dailyRepor
     if (filters.stage !== "all" && project.stage !== filters.stage) return false;
     return true;
   });
+  const ledgerProjects = sortProjectLedger(filtered);
 
-  const handleExport = () => exportCsv("营销作战地图_项目清单.csv", filtered.map((project) => ({
+  const handleExport = () => exportCsv("营销作战地图_项目台账.csv", ledgerProjects.map((project) => ({
     ...project,
     isDirectContract: project.isDirectContract ? "是" : "否",
     deliveryPartners: project.deliveryPartners?.join("、") || "",
@@ -1618,12 +1620,12 @@ function WorkbenchPage({ projects, weeklyUpdates, dailyReportImports, dailyRepor
     <div className="standard-page">
       <PageHeader eyebrow="MULTI-DIMENSIONAL WORKBENCH" title="数据工作台" description={roleKey === "sales" ? "仅展示本人负责项目、周更新、日报与行动日历" : "像多维表格一样定位、筛选和推进所有营销项目"} actions={<PrimaryButton onClick={onCreate}><PlusOutlined /> 新建项目</PrimaryButton>} />
       <section className="view-strip">
-        <div>{[{ key: "table", label: "表格", icon: TableOutlined }, { key: "kanban", label: "阶段看板", icon: AppstoreOutlined }, { key: "weekly-update", label: "周行动更新", icon: EditOutlined }, { key: "action-calendar", label: "行动日历", icon: CalendarOutlined }, ...(roleKey === "admin" ? [{ key: "daily-report", label: "日报导入", icon: FileTextOutlined }] : [])].map((item) => { const Icon = item.icon; return <button key={item.key} type="button" className={view === item.key ? "is-active" : ""} onClick={() => setView(item.key)}><Icon />{item.label}</button>; })}</div>
-        <span>当前视图：<strong>{{ table: "项目作战总表", kanban: "销售阶段看板", "weekly-update": "销售周行动更新", "action-calendar": "每周项目进展", "daily-report": "销售日报智能导入" }[view]}</strong></span>
+        <div>{[{ key: "table", label: "项目台账", icon: TableOutlined }, { key: "kanban", label: "阶段看板", icon: AppstoreOutlined }, { key: "weekly-update", label: "周行动更新", icon: EditOutlined }, { key: "action-calendar", label: "行动日历", icon: CalendarOutlined }, ...(roleKey === "admin" ? [{ key: "daily-report", label: "日报导入", icon: FileTextOutlined }] : [])].map((item) => { const Icon = item.icon; return <button key={item.key} type="button" className={view === item.key ? "is-active" : ""} onClick={() => setView(item.key)}><Icon />{item.label}</button>; })}</div>
+        <span>当前视图：<strong>{{ table: "项目台账", kanban: "销售阶段看板", "weekly-update": "销售周行动更新", "action-calendar": "每周项目进展", "daily-report": "销售日报智能导入" }[view]}</strong></span>
       </section>
       {["table", "kanban"].includes(view) && <FilterBar filters={filters} setFilters={setFilters} owners={ownerOptions} onCreate={onCreate} onExport={handleExport} resultCount={filtered.length} roleKey={roleKey} />}
       {selectedIds.length > 0 && <div className="bulk-bar"><span>已选择 <strong>{selectedIds.length}</strong> 条记录</span><GhostButton onClick={() => setSelectedIds([])}>取消选择</GhostButton><GhostButton className="danger-button" onClick={() => { onBulkDelete(selectedIds); setSelectedIds([]); }}><DeleteOutlined /> 批量删除</GhostButton></div>}
-      {view === "table" && <ProjectTable projects={filtered} selectedIds={selectedIds} setSelectedIds={setSelectedIds} onView={onView} onEdit={onEdit} onDelete={onDelete} />}
+      {view === "table" && <ProjectTable projects={ledgerProjects} selectedIds={selectedIds} setSelectedIds={setSelectedIds} onView={onView} onEdit={onEdit} onDelete={onDelete} />}
       {view === "kanban" && <KanbanView projects={filtered} onView={onView} />}
       {view === "weekly-update" && <WeeklyUpdateView projects={scopedProjects} weeklyUpdates={scopedWeeklyUpdates} users={users} roleKey={roleKey} currentUserId={currentUserId} currentUserName={currentUserName} onSave={onSaveWeekly} onView={onView} />}
       {view === "action-calendar" && <ActionCalendarView projects={scopedProjects} weeklyUpdates={scopedWeeklyUpdates} dailyReportEntries={scopedDailyEntries} users={users} roleKey={roleKey} currentUserId={currentUserId} onView={onView} />}
