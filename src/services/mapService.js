@@ -80,6 +80,15 @@ async function fetchJson(url, signal) {
   return response.json();
 }
 
+export async function fetchBoundaryJson(primaryUrl, fallbackUrl, signal, fetcher = fetchJson) {
+  try {
+    return await fetcher(primaryUrl, signal);
+  } catch (error) {
+    if (!fallbackUrl || error.name === "AbortError" || signal?.aborted) throw error;
+    return fetcher(fallbackUrl, signal);
+  }
+}
+
 export async function loadBoundary(adcode = "100000", options = {}) {
   const normalized = normalizeAdcode(adcode);
   const full = options.full ?? (normalized === "100000" || !normalized.endsWith("00"));
@@ -96,8 +105,10 @@ export async function loadBoundary(adcode = "100000", options = {}) {
     const suffix = full ? "_full" : "";
     const localNational = `${import.meta.env.BASE_URL}maps/100000_full.json`;
     const backendBoundary = BACKEND_URL ? `${BACKEND_URL}/functions/v1/map-boundary?adcode=${normalized}&full=${full}` : null;
-    const url = normalized === "100000" ? localNational : backendBoundary ?? `${DATAV_BOUNDARY_BASE}/${normalized}${suffix}.json`;
-    const geoJson = normalizeGeoJson(await fetchJson(url, controller.signal));
+    const directBoundary = `${DATAV_BOUNDARY_BASE}/${normalized}${suffix}.json`;
+    const primaryUrl = normalized === "100000" ? localNational : backendBoundary ?? directBoundary;
+    const fallbackUrl = normalized === "100000" || !backendBoundary ? null : directBoundary;
+    const geoJson = normalizeGeoJson(await fetchBoundaryJson(primaryUrl, fallbackUrl, controller.signal));
     if (!geoJson.features.length) throw new Error("地图边界数据为空");
     boundaryCache.set(cacheKey, geoJson);
     return geoJson;

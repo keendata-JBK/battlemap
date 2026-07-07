@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildDrillPath,
   createRegionBoundary,
+  fetchBoundaryJson,
   getBoundaryRequest,
   getProjectAdcode,
   isDrillItemInRegion,
@@ -55,6 +56,24 @@ describe("mapService", () => {
     expect(getBoundaryRequest([])).toEqual({ adcode: "100000", full: true });
     expect(getBoundaryRequest([{ adcode: "330100", level: "city" }])).toEqual({ adcode: "330100", full: true });
     expect(getBoundaryRequest([{ adcode: "330108", level: "district" }])).toEqual({ adcode: "330108", full: false });
+  });
+
+  it("falls back to the public boundary source when the proxy cannot be fetched", async () => {
+    const calls = [];
+    const result = await fetchBoundaryJson("proxy-url", "public-url", undefined, async (url) => {
+      calls.push(url);
+      if (url === "proxy-url") throw new TypeError("Failed to fetch");
+      return { type: "FeatureCollection", features: [{ properties: { adcode: "510100" } }] };
+    });
+    expect(calls).toEqual(["proxy-url", "public-url"]);
+    expect(result.features).toHaveLength(1);
+  });
+
+  it("does not retry an aborted boundary request", async () => {
+    const abortError = new Error("aborted");
+    abortError.name = "AbortError";
+    const fetcher = async () => { throw abortError; };
+    await expect(fetchBoundaryJson("proxy-url", "public-url", undefined, fetcher)).rejects.toBe(abortError);
   });
 
   it("matches administrative names with or without suffixes", () => {

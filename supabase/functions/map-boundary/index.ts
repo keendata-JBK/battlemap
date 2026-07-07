@@ -1,7 +1,6 @@
 const boundaryBase = "https://geo.datav.aliyun.com/areas_v3/bound";
-const allowedOrigin = Deno.env.get("ALLOWED_ORIGIN") ?? "*";
 const corsHeaders = {
-  "Access-Control-Allow-Origin": allowedOrigin,
+  "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, OPTIONS",
   "Vary": "Origin",
 };
