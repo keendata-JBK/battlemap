@@ -97,7 +97,7 @@ async function processReport(
     if (profileError || !profile) throw new Error(`报告用户读取失败：${profileError?.message ?? "用户不存在"}`);
     const canViewAll = ["admin", "presales"].includes(profile.role);
 
-    let projectQuery = adminClient.from("project_dashboard").select("id,name,customer_name,amount,stage,probability,owner_id,owner_name,health,priority,next_action,next_action_date,expected_close,risk,updated_at").order("updated_at", { ascending: false }).limit(5000);
+    let projectQuery = adminClient.from("project_dashboard").select("id,name,customer_name,category,referral_unit,amount,stage,probability,owner_id,owner_name,health,priority,next_action,next_action_date,expected_close,risk,description,decision_chain_description,competitor_description,updated_at").order("updated_at", { ascending: false }).limit(5000);
     let dailyQuery = adminClient.from("daily_report_entries").select("project_id,salesperson_id,report_date,activity_type,content,customer_contact").gte("report_date", periodStart).lte("report_date", periodEnd).order("report_date", { ascending: false }).limit(5000);
     let weeklyQuery = adminClient.from("weekly_updates").select("owner_id,week_start,status,last_week_summary,this_week_goal,risks,support_needed,actions,submitted_at").gte("week_start", periodStart).lte("week_start", periodEnd).order("week_start", { ascending: false }).limit(500);
     if (!canViewAll) {

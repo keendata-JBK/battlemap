@@ -70,6 +70,7 @@ import {
 } from "./services/mapService.js";
 import { parseImportCsv } from "./services/importService.js";
 import { sortProjectLedger } from "./services/projectLedger.js";
+import { buildReferralUnitColorMap, REFERRAL_UNIT_FALLBACK } from "./services/mapPresentation.js";
 import { downloadSalesReportPdf } from "./services/reportPdf.js";
 import {
   askMarketingData,
@@ -480,7 +481,6 @@ function MapCommandPanel({
 
 function ProjectDrawer({ project, onClose, onOpenDetails }) {
   if (!project) return null;
-  const stage = getStage(project.stage);
   const category = CATEGORY_META[project.category];
   return (
     <aside className="project-drawer" aria-label={`${project.name}项目摘要`}>
@@ -493,6 +493,7 @@ function ProjectDrawer({ project, onClose, onOpenDetails }) {
           </div>
           <p>
             <EnvironmentOutlined /> {formatProjectLocation(project)}
+            {project.category === "government" ? ` · 牵线单位：${project.referralUnit || REFERRAL_UNIT_FALLBACK}` : ""}
           </p>
         </div>
         <IconButton label="关闭项目详情" onClick={onClose}>
@@ -501,26 +502,28 @@ function ProjectDrawer({ project, onClose, onOpenDetails }) {
       </header>
       <dl>
         <div>
-          <dt>项目阶段</dt>
-          <dd>{stage.label}</dd>
-        </div>
-        <div>
-          <dt>负责人</dt>
-          <dd>{project.owner}</dd>
-        </div>
-        <div>
-          <dt>下一步动作</dt>
-          <dd>{project.nextAction || "未填写"}{project.nextActionDate ? `（${project.nextActionDate.slice(5)}）` : ""}</dd>
-        </div>
-        <div>
-          <dt>预计成交</dt>
+          <dt>预计成交金额</dt>
           <dd className="money">{formatMoney(project.amount)} 万元</dd>
         </div>
         <div>
-          <dt>风险</dt>
-          <dd>
-            <StatusPill health={project.health} /> {project.risk}
-          </dd>
+          <dt>预计成交日期</dt>
+          <dd>{project.expectedClose || "未填写"}</dd>
+        </div>
+        <div className="drawer-description-row">
+          <dt>项目需求描述</dt>
+          <dd className="drawer-description">{project.requirementDescription || "未填写"}</dd>
+        </div>
+        <div className="drawer-description-row">
+          <dt>决策链描述</dt>
+          <dd className="drawer-description">{project.decisionChainDescription || "未填写"}</dd>
+        </div>
+        <div className="drawer-description-row">
+          <dt>竞争对手描述</dt>
+          <dd className="drawer-description">{project.competitorDescription || "未填写"}</dd>
+        </div>
+        <div>
+          <dt>项目优先级</dt>
+          <dd>{project.priority}</dd>
         </div>
       </dl>
       <PrimaryButton onClick={onOpenDetails}>查看项目详情 <RightOutlined /></PrimaryButton>
@@ -602,8 +605,17 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
   const [healthFilter, setHealthFilter] = useState("全部健康度");
   const [ownerFilter, setOwnerFilter] = useState("全部销售");
   const [stageFilter, setStageFilter] = useState("全部节点");
+  const [referralUnitFilter, setReferralUnitFilter] = useState("全部牵线单位");
   const [fullScreen, setFullScreen] = useState(false);
   const mapTransitioningRef = useRef(false);
+  const governmentReferralMode = layers.government
+    && Object.entries(layers).every(([key, enabled]) => key === "government" || !enabled);
+  const referralUnitColorMap = useMemo(() => buildReferralUnitColorMap(projects), [projects]);
+  const referralUnitOptions = useMemo(() => Object.keys(referralUnitColorMap), [referralUnitColorMap]);
+
+  useEffect(() => {
+    if (!governmentReferralMode) setReferralUnitFilter("全部牵线单位");
+  }, [governmentReferralMode]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -638,8 +650,11 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
     if (healthFilter !== "全部健康度") rows = rows.filter((project) => project.health === healthFilter);
     if (ownerFilter !== "全部销售") rows = rows.filter((project) => project.ownerId === ownerFilter);
     if (stageFilter !== "全部节点") rows = rows.filter((project) => project.stage === stageFilter);
+    if (governmentReferralMode && referralUnitFilter !== "全部牵线单位") {
+      rows = rows.filter((project) => (project.referralUnit?.trim() || REFERRAL_UNIT_FALLBACK) === referralUnitFilter);
+    }
     return rows;
-  }, [projects, layers, search, regionMode, drillPath, regionFilter, healthFilter, ownerFilter, stageFilter]);
+  }, [projects, layers, search, regionMode, drillPath, regionFilter, healthFilter, ownerFilter, stageFilter, governmentReferralMode, referralUnitFilter]);
 
   const ownerOptions = useMemo(() => Array.from(new Map(projects.map((project) => [project.ownerId, project.owner])).entries()).sort((a, b) => a[1].localeCompare(b[1], "zh-CN")), [projects]);
 
@@ -650,6 +665,7 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
 
   const selectedProject = filteredProjects.find((project) => project.id === selectedProjectId);
   const currentMapLevel = drillPath.at(-1)?.level ?? (regionMode === "全国" ? "country" : "region");
+  const aggregateMode = ["country", "region"].includes(currentMapLevel);
 
   const changeRegion = useCallback((mode) => {
     if (mode === regionMode && drillPath.length === 0) return;
@@ -757,6 +773,9 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
             mapKey={`${regionMode}-${drillPath.map((item) => item.adcode).join("-") || "root"}`}
             level={currentMapLevel}
             drillDisabled={mapLoading || Boolean(mapError)}
+            governmentReferralMode={governmentReferralMode}
+            referralUnitColorMap={referralUnitColorMap}
+            aggregateMode={aggregateMode}
           />
           {mapLoading && <div className="map-state"><LoadingOutlined spin /><strong>正在加载行政区边界</strong><span>支持省、市、区县逐级下钻</span></div>}
           {mapError && <div className="map-state map-state--error"><InfoCircleOutlined /><strong>{mapError}</strong><button type="button" onClick={() => setMapReloadToken((value) => value + 1)}>重新加载</button></div>}
@@ -768,10 +787,20 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
             <IconButton label={drillPath.length ? "返回上一级" : "定位到当前区域"} onClick={goBackOneLevel}><AimOutlined /></IconButton>
           </div>
           <div className="map-legend">
-            <strong>项目价值</strong>
-            <span><i className="legend-dot legend-dot--high" />高价值项目（≥500万）</span>
-            <span><i className="legend-dot legend-dot--mid" />中价值项目（100–500万）</span>
-            <span><i className="legend-dot legend-dot--low" />培育项目（＜100万）</span>
+            {aggregateMode ? <>
+              <strong>省级项目聚合</strong>
+              <span><i className="legend-bubble legend-bubble--large" />圆圈越大，预计成交金额越高</span>
+              <span><i className="legend-bubble legend-bubble--small" />数字表示该省项目数量</span>
+              <span><AimOutlined />点击气泡下钻并展开项目</span>
+            </> : governmentReferralMode ? <>
+              <strong>政府资源 · 牵线单位</strong>
+              {referralUnitOptions.map((unit) => <span key={unit}><i className="legend-dot" style={{ background: referralUnitColorMap[unit] }} />{unit}<b>{filteredProjects.filter((project) => (project.referralUnit?.trim() || REFERRAL_UNIT_FALLBACK) === unit).length}</b></span>)}
+            </> : <>
+              <strong>项目价值</strong>
+              <span><i className="legend-dot legend-dot--high" />高价值项目（≥500万）</span>
+              <span><i className="legend-dot legend-dot--mid" />中价值项目（100–500万）</span>
+              <span><i className="legend-dot legend-dot--low" />培育项目（＜100万）</span>
+            </>}
           </div>
           {layersOpen && (
             <div className="map-popover map-popover--layers">
@@ -791,7 +820,8 @@ function MapPage({ projects, alerts, onSelectProject, selectedProjectId, onGoToP
               <label>销售负责人<select value={ownerFilter} onChange={(event) => setOwnerFilter(event.target.value)}><option value="全部销售">全部销售</option>{ownerOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label>
               <label>流程节点<select value={stageFilter} onChange={(event) => setStageFilter(event.target.value)}><option value="全部节点">全部节点</option>{STAGES.map((stage) => <option key={stage.key} value={stage.key}>{stage.label}</option>)}</select></label>
               <label>项目健康度<select value={healthFilter} onChange={(event) => setHealthFilter(event.target.value)}><option>全部健康度</option><option value="green">正常</option><option value="yellow">关注</option><option value="red">高风险</option></select></label>
-              <GhostButton onClick={() => { setRegionFilter("全部区域"); setHealthFilter("全部健康度"); setOwnerFilter("全部销售"); setStageFilter("全部节点"); }}>重置筛选</GhostButton>
+              {governmentReferralMode && <label>牵线单位<select value={referralUnitFilter} onChange={(event) => setReferralUnitFilter(event.target.value)}><option>全部牵线单位</option>{referralUnitOptions.map((unit) => <option key={unit}>{unit}</option>)}</select></label>}
+              <GhostButton onClick={() => { setRegionFilter("全部区域"); setHealthFilter("全部健康度"); setOwnerFilter("全部销售"); setStageFilter("全部节点"); setReferralUnitFilter("全部牵线单位"); }}>重置筛选</GhostButton>
             </div>
           )}
           {alertsOpen && (
@@ -834,6 +864,10 @@ function ProjectForm({ initialProject, onSubmit, onCancel, users = [], saving = 
     isDirectContract: initialProject.isDirectContract !== false,
     integrator: initialProject.integrator ?? "",
     deliveryPartners: Array.isArray(initialProject.deliveryPartners) ? initialProject.deliveryPartners.join("、") : initialProject.deliveryPartners ?? "",
+    referralUnit: initialProject.referralUnit ?? "",
+    requirementDescription: initialProject.requirementDescription ?? "",
+    decisionChainDescription: initialProject.decisionChainDescription ?? "",
+    competitorDescription: initialProject.competitorDescription ?? "",
   } : {
     name: "",
     account: "",
@@ -861,6 +895,10 @@ function ProjectForm({ initialProject, onSubmit, onCancel, users = [], saving = 
     isDirectContract: true,
     integrator: "",
     deliveryPartners: "",
+    referralUnit: "",
+    requirementDescription: "",
+    decisionChainDescription: "",
+    competitorDescription: "",
   });
   const [locating, setLocating] = useState(false);
   const [locationMessage, setLocationMessage] = useState("");
@@ -899,6 +937,7 @@ function ProjectForm({ initialProject, onSubmit, onCancel, users = [], saving = 
         <label className="span-2">联系人邮箱<input type="email" value={form.contactEmail ?? ""} onChange={(event) => update("contactEmail", event.target.value)} placeholder="机密数据" /></label>
         <label>项目类型<select value={form.category} onChange={(event) => update("category", event.target.value)}>{Object.entries(CATEGORY_META).map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}</select></label>
         <label>销售阶段<select value={form.stage} onChange={(event) => update("stage", event.target.value)}>{STAGES.map((stage) => <option key={stage.key} value={stage.key}>{stage.label}</option>)}</select></label>
+        {form.category === "government" && <label className="span-2">牵线单位<input required value={form.referralUnit} onChange={(event) => update("referralUnit", event.target.value)} placeholder="例如：金牛区政府、成都市经信局" /></label>}
         <label>经营区域<select value={form.region} onChange={(event) => update("region", event.target.value)}>{BUSINESS_REGIONS.map((region) => <option key={region}>{region}</option>)}</select></label>
         <label>省份<input required value={form.province} onChange={(event) => updateLocationField("province", event.target.value)} /></label>
         <label>城市<input value={form.city} onChange={(event) => updateLocationField("city", event.target.value)} placeholder="直辖市可填写同名城市" /></label>
@@ -914,6 +953,9 @@ function ProjectForm({ initialProject, onSubmit, onCancel, users = [], saving = 
         <label className="span-2">交付伙伴<input value={form.deliveryPartners} onChange={(event) => update("deliveryPartners", event.target.value)} placeholder="多个伙伴可用顿号或逗号分隔" /></label>
         <label>健康度<select value={form.health} onChange={(event) => update("health", event.target.value)}><option value="green">正常</option><option value="yellow">关注</option><option value="red">高风险</option><option value="gray">暂停</option></select></label>
         <label>优先级<select value={form.priority} onChange={(event) => update("priority", event.target.value)}><option>P0</option><option>P1</option><option>P2</option><option>P3</option></select></label>
+        <label className="span-2">项目需求描述<textarea rows="3" value={form.requirementDescription} onChange={(event) => update("requirementDescription", event.target.value)} placeholder="描述项目建设需求、目标和范围" /></label>
+        <label className="span-2">决策链描述<textarea rows="3" value={form.decisionChainDescription} onChange={(event) => update("decisionChainDescription", event.target.value)} placeholder="描述关键决策人、影响人及决策流程" /></label>
+        <label className="span-2">竞争对手描述<textarea rows="3" value={form.competitorDescription} onChange={(event) => update("competitorDescription", event.target.value)} placeholder="描述竞争对手、竞争态势及我方优势" /></label>
         <label className="span-2">下一步动作<input value={form.nextAction} onChange={(event) => update("nextAction", event.target.value)} /></label>
         <label>计划日期<input type="date" value={form.nextActionDate} onChange={(event) => update("nextActionDate", event.target.value)} /></label>
         <label>预计成交<input type="date" value={form.expectedClose} onChange={(event) => update("expectedClose", event.target.value)} /></label>
@@ -1055,11 +1097,11 @@ function DetailModal({ project, onClose, onEdit, users }) {
         <section className="detail-columns">
           <div>
             <h4>推进信息</h4>
-            <dl><div><dt>下一步动作</dt><dd>{project.nextAction}</dd></div><div><dt>计划时间</dt><dd>{project.nextActionDate}</dd></div><div><dt>预计成交</dt><dd>{project.expectedClose}</dd></div><div><dt>来源</dt><dd>{project.source}</dd></div><div><dt>签约方式</dt><dd>{project.isDirectContract ? "科杰直签" : `集成商：${project.integrator || "未填写"}`}</dd></div></dl>
+            <dl><div><dt>下一步动作</dt><dd>{project.nextAction}</dd></div><div><dt>计划时间</dt><dd>{project.nextActionDate}</dd></div><div><dt>预计成交</dt><dd>{project.expectedClose}</dd></div><div><dt>来源</dt><dd>{project.source}</dd></div><div><dt>牵线单位</dt><dd>{project.category === "government" ? project.referralUnit || REFERRAL_UNIT_FALLBACK : "不适用"}</dd></div><div><dt>签约方式</dt><dd>{project.isDirectContract ? "科杰直签" : `集成商：${project.integrator || "未填写"}`}</dd></div></dl>
           </div>
           <div>
             <h4>区域与风险</h4>
-            <dl><div><dt>经营区域</dt><dd>{project.region}</dd></div><div><dt>行政区</dt><dd>{project.province} · {project.city} · {project.district}</dd></div><div><dt>交付伙伴</dt><dd>{project.deliveryPartners?.length ? project.deliveryPartners.join("、") : "暂无"}</dd></div><div><dt>项目风险</dt><dd>{project.risk}</dd></div><div><dt>最近更新</dt><dd>{project.updatedAt}</dd></div></dl>
+            <dl><div><dt>经营区域</dt><dd>{project.region}</dd></div><div><dt>行政区</dt><dd>{project.province} · {project.city} · {project.district}</dd></div><div><dt>交付伙伴</dt><dd>{project.deliveryPartners?.length ? project.deliveryPartners.join("、") : "暂无"}</dd></div><div><dt>项目需求</dt><dd>{project.requirementDescription || "未填写"}</dd></div><div><dt>决策链</dt><dd>{project.decisionChainDescription || "未填写"}</dd></div><div><dt>竞争对手</dt><dd>{project.competitorDescription || "未填写"}</dd></div><div><dt>项目风险</dt><dd>{project.risk}</dd></div><div><dt>最近更新</dt><dd>{project.updatedAt}</dd></div></dl>
           </div>
         </section>
         <section className="timeline">
@@ -1079,13 +1121,14 @@ function DetailModal({ project, onClose, onEdit, users }) {
   );
 }
 
-function FilterBar({ filters, setFilters, owners, onCreate, onExport, resultCount, roleKey }) {
+function FilterBar({ filters, setFilters, owners, referralUnits, onCreate, onExport, resultCount, roleKey }) {
   return (
     <div className="filter-bar">
       <label className="standard-search"><SearchOutlined /><input value={filters.search} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} placeholder="搜索项目、客户、区县" /></label>
       <select value={filters.region} onChange={(event) => setFilters((current) => ({ ...current, region: event.target.value }))}><option>全部区域</option>{BUSINESS_REGIONS.map((region) => <option key={region}>{region}</option>)}</select>
       <select disabled={roleKey === "sales"} value={filters.owner} onChange={(event) => setFilters((current) => ({ ...current, owner: event.target.value }))}><option value="all">{roleKey === "sales" ? "仅本人项目" : "全部销售"}</option>{owners.map(([id, name]) => <option value={id} key={id}>{name}</option>)}</select>
       <select value={filters.category} onChange={(event) => setFilters((current) => ({ ...current, category: event.target.value }))}><option value="all">全部类型</option>{Object.entries(CATEGORY_META).map(([key, meta]) => <option value={key} key={key}>{meta.label}</option>)}</select>
+      <select value={filters.referralUnit} onChange={(event) => setFilters((current) => ({ ...current, referralUnit: event.target.value }))}><option value="all">全部牵线单位</option>{referralUnits.map((unit) => <option value={unit} key={unit}>{unit}</option>)}</select>
       <select value={filters.stage} onChange={(event) => setFilters((current) => ({ ...current, stage: event.target.value }))}><option value="all">全部阶段</option>{STAGES.map((stage) => <option value={stage.key} key={stage.key}>{stage.label}</option>)}</select>
       <span className="filter-result">共 {resultCount} 条</span>
       <GhostButton onClick={onExport}><DownloadOutlined /> 导出</GhostButton>
@@ -1100,13 +1143,14 @@ function ProjectTable({ projects, selectedIds, setSelectedIds, onView, onEdit, o
   return (
     <div className="table-wrap">
       <table className="data-table">
-        <thead><tr><th><input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="全选" /></th><th>项目名称</th><th>资源类型</th><th>区域</th><th>负责人</th><th>当前阶段</th><th className="align-right">商机金额</th><th>健康度</th><th>下一步动作</th><th>操作</th></tr></thead>
+        <thead><tr><th><input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="全选" /></th><th>项目名称</th><th>资源类型</th><th>牵线单位</th><th>区域</th><th>负责人</th><th>当前阶段</th><th className="align-right">商机金额</th><th>健康度</th><th>下一步动作</th><th>操作</th></tr></thead>
         <tbody>
           {projects.map((project) => (
             <tr key={project.id}>
               <td><input type="checkbox" checked={selectedIds.includes(project.id)} onChange={() => setSelectedIds((current) => current.includes(project.id) ? current.filter((id) => id !== project.id) : [...current, project.id])} aria-label={`选择${project.name}`} /></td>
               <td><button className="table-title" type="button" onClick={() => onView(project)}><strong>{project.name}</strong><small>{project.code ?? project.id} · {project.account}</small></button></td>
               <td><span className="category-badge" style={{ "--category-color": CATEGORY_META[project.category].color }}>{CATEGORY_META[project.category].label}</span></td>
+              <td>{project.category === "government" ? project.referralUnit || <span className="cell-muted">未填写</span> : <span className="cell-muted">—</span>}</td>
               <td>{project.region}<small className="cell-subtext">{project.city} · {project.district}</small></td>
               <td>{project.owner}<small className="cell-subtext">售前：{project.presales}</small></td>
               <td><span className="stage-badge">{getStage(project.stage).label}</span></td>
@@ -1116,7 +1160,7 @@ function ProjectTable({ projects, selectedIds, setSelectedIds, onView, onEdit, o
               <td><div className="row-actions"><IconButton label="查看" onClick={() => onView(project)}><EyeOutlined /></IconButton><IconButton label="编辑" onClick={() => onEdit(project)}><EditOutlined /></IconButton><IconButton label="删除" onClick={() => onDelete(project)}><DeleteOutlined /></IconButton></div></td>
             </tr>
           ))}
-          {!projects.length && <tr><td colSpan="10"><div className="empty-state"><SearchOutlined /><strong>没有匹配的数据</strong><span>请调整筛选条件后重试</span></div></td></tr>}
+          {!projects.length && <tr><td colSpan="11"><div className="empty-state"><SearchOutlined /><strong>没有匹配的数据</strong><span>请调整筛选条件后重试</span></div></td></tr>}
         </tbody>
       </table>
     </div>
@@ -1589,17 +1633,19 @@ function DailyReportImportView({ projects, users, importHistory = [], onAnalyze,
 function WorkbenchPage({ projects, weeklyUpdates, dailyReportImports, dailyReportEntries, users, roleKey, currentUserId, currentUserName, onSaveWeekly, onAnalyzeDailyReport, onLoadDailyReportJob, onImportDailyReport, onLoadDailyDraft, onSaveDailyDraft, onClearDailyDraft, onCreate, onView, onEdit, onDelete, onBulkDelete }) {
   const [view, setView] = useState("table");
   const [selectedIds, setSelectedIds] = useState([]);
-  const [filters, setFilters] = useState({ search: "", region: "全部区域", owner: "all", category: "all", stage: "all" });
+  const [filters, setFilters] = useState({ search: "", region: "全部区域", owner: "all", category: "all", referralUnit: "all", stage: "all" });
   const scopedProjects = roleKey === "sales" ? projects.filter((project) => project.ownerId === currentUserId) : projects;
   const scopedWeeklyUpdates = roleKey === "sales" ? weeklyUpdates.filter((item) => item.ownerId === currentUserId) : weeklyUpdates;
   const scopedDailyEntries = roleKey === "sales" ? dailyReportEntries.filter((item) => item.salespersonId === currentUserId && scopedProjects.some((project) => project.id === item.projectId)) : dailyReportEntries;
   const ownerOptions = useMemo(() => Array.from(new Map(scopedProjects.map((project) => [project.ownerId, project.owner])).entries()).sort((a, b) => a[1].localeCompare(b[1], "zh-CN")), [scopedProjects]);
+  const referralUnitOptions = useMemo(() => Array.from(new Set(scopedProjects.filter((project) => project.category === "government" && project.referralUnit).map((project) => project.referralUnit))).sort((a, b) => a.localeCompare(b, "zh-CN")), [scopedProjects]);
   const filtered = scopedProjects.filter((project) => {
     const keyword = filters.search.trim().toLowerCase();
-    if (keyword && ![project.name, project.account, project.city, project.district].join(" ").toLowerCase().includes(keyword)) return false;
+    if (keyword && ![project.name, project.account, project.city, project.district, project.referralUnit].join(" ").toLowerCase().includes(keyword)) return false;
     if (filters.region !== "全部区域" && project.region !== filters.region) return false;
     if (filters.owner !== "all" && project.ownerId !== filters.owner) return false;
     if (filters.category !== "all" && project.category !== filters.category) return false;
+    if (filters.referralUnit !== "all" && project.referralUnit !== filters.referralUnit) return false;
     if (filters.stage !== "all" && project.stage !== filters.stage) return false;
     return true;
   });
@@ -1613,7 +1659,8 @@ function WorkbenchPage({ projects, weeklyUpdates, dailyReportImports, dailyRepor
     { key: "id", label: "项目编号" }, { key: "name", label: "项目名称" }, { key: "account", label: "客户" },
     { key: "region", label: "区域" }, { key: "province", label: "省份" }, { key: "city", label: "城市" },
     { key: "district", label: "区县" }, { key: "amount", label: "金额（万元）" }, { key: "owner", label: "负责人" },
-    { key: "isDirectContract", label: "是否直签" }, { key: "integrator", label: "集成商" }, { key: "deliveryPartners", label: "交付伙伴" },
+    { key: "referralUnit", label: "牵线单位" }, { key: "isDirectContract", label: "是否直签" }, { key: "integrator", label: "集成商" }, { key: "deliveryPartners", label: "交付伙伴" },
+    { key: "requirementDescription", label: "项目需求描述" }, { key: "decisionChainDescription", label: "决策链描述" }, { key: "competitorDescription", label: "竞争对手描述" },
   ]);
 
   return (
@@ -1623,7 +1670,7 @@ function WorkbenchPage({ projects, weeklyUpdates, dailyReportImports, dailyRepor
         <div>{[{ key: "table", label: "项目台账", icon: TableOutlined }, { key: "kanban", label: "阶段看板", icon: AppstoreOutlined }, { key: "weekly-update", label: "周行动更新", icon: EditOutlined }, { key: "action-calendar", label: "行动日历", icon: CalendarOutlined }, ...(roleKey === "admin" ? [{ key: "daily-report", label: "日报导入", icon: FileTextOutlined }] : [])].map((item) => { const Icon = item.icon; return <button key={item.key} type="button" className={view === item.key ? "is-active" : ""} onClick={() => setView(item.key)}><Icon />{item.label}</button>; })}</div>
         <span>当前视图：<strong>{{ table: "项目台账", kanban: "销售阶段看板", "weekly-update": "销售周行动更新", "action-calendar": "每周项目进展", "daily-report": "销售日报智能导入" }[view]}</strong></span>
       </section>
-      {["table", "kanban"].includes(view) && <FilterBar filters={filters} setFilters={setFilters} owners={ownerOptions} onCreate={onCreate} onExport={handleExport} resultCount={filtered.length} roleKey={roleKey} />}
+      {["table", "kanban"].includes(view) && <FilterBar filters={filters} setFilters={setFilters} owners={ownerOptions} referralUnits={referralUnitOptions} onCreate={onCreate} onExport={handleExport} resultCount={filtered.length} roleKey={roleKey} />}
       {selectedIds.length > 0 && <div className="bulk-bar"><span>已选择 <strong>{selectedIds.length}</strong> 条记录</span><GhostButton onClick={() => setSelectedIds([])}>取消选择</GhostButton><GhostButton className="danger-button" onClick={() => { onBulkDelete(selectedIds); setSelectedIds([]); }}><DeleteOutlined /> 批量删除</GhostButton></div>}
       {view === "table" && <ProjectTable projects={ledgerProjects} selectedIds={selectedIds} setSelectedIds={setSelectedIds} onView={onView} onEdit={onEdit} onDelete={onDelete} />}
       {view === "kanban" && <KanbanView projects={filtered} onView={onView} />}
@@ -1920,7 +1967,7 @@ function ImportModal({ onClose, onImport }) {
     <Modal title="批量导入项目数据" onClose={onClose} width={700}>
       <div className="import-modal">
         <div className="import-steps"><span className="is-active">1 上传文件</span><b /><span className={step === "preview" ? "is-active" : ""}>2 预检确认</span><b /><span>3 导入结果</span></div>
-        {step === "upload" ? <><label className="dropzone"><CloudUploadOutlined /><strong>上传 CSV 数据文件</strong><span>单次最多 10,000 行，系统将校验必填字段、行政区划代码和地图坐标</span><input type="file" accept=".csv,text/csv" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><em>{file ? file.name : "选择文件"}</em></label><div className="import-tips"><InfoCircleOutlined /><span><strong>导入前检查</strong><small>请使用系统模板，并填写六位行政区划代码、经度、纬度和负责人。</small></span></div></> : <div className="import-preview"><header><strong>预检结果</strong><span>{preview.filter((row) => row.status === "通过").length} 行通过，{preview.filter((row) => row.status !== "通过").length} 行需修正</span></header>{preview.slice(0, 50).map((row) => <div key={row.row}><b>第 {row.row} 行</b><span>{row.data.name || "未填写项目名称"} · {row.data.account || "未填写客户"}{row.error ? `（${row.error}）` : ""}</span><em className={row.status === "通过" ? "success-text" : "danger-text"}>{row.status}</em></div>)}</div>}
+        {step === "upload" ? <><label className="dropzone"><CloudUploadOutlined /><strong>上传 CSV 数据文件</strong><span>单次最多 10,000 行，系统将校验必填字段、行政区划代码和地图坐标</span><input type="file" accept=".csv,text/csv" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><em>{file ? file.name : "选择文件"}</em></label><div className="import-tips"><InfoCircleOutlined /><span><strong>导入前检查</strong><small>请使用系统模板；政府资源项目还需填写牵线单位。</small></span></div></> : <div className="import-preview"><header><strong>预检结果</strong><span>{preview.filter((row) => row.status === "通过").length} 行通过，{preview.filter((row) => row.status !== "通过").length} 行需修正</span></header>{preview.slice(0, 50).map((row) => <div key={row.row}><b>第 {row.row} 行</b><span>{row.data.name || "未填写项目名称"} · {row.data.account || "未填写客户"}{row.error ? `（${row.error}）` : ""}</span><em className={row.status === "通过" ? "success-text" : "danger-text"}>{row.status}</em></div>)}</div>}
       </div>
       <footer className="modal__footer">
         <GhostButton onClick={onClose}>取消</GhostButton>
@@ -1934,12 +1981,14 @@ function ManagementPage({ projects, operations, users, roleKey, onCreate, onImpo
   const [duplicateOpen, setDuplicateOpen] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
   const projectCount = projects.length;
+  const governmentProjects = projects.filter((project) => project.category === "government");
   const percentage = (predicate) => projectCount ? Math.round((projects.filter(predicate).length / projectCount) * 100) : 0;
   const quality = {
     region: percentage((project) => project.district && /^\d{6}$/.test(project.adcode || "")),
     owner: percentage((project) => Boolean(project.ownerId)),
     next: percentage((project) => Boolean(project.nextAction && project.nextActionDate)),
     contact: percentage((project) => project.hasValidContact),
+    referral: governmentProjects.length ? Math.round((governmentProjects.filter((project) => project.referralUnit).length / governmentProjects.length) * 100) : 100,
   };
   const qualityScore = projectCount ? Math.round(Object.values(quality).reduce((sum, value) => sum + value, 0) / 4) : 0;
   const highPriorityIssues = projects.filter((project) => ["P0", "P1"].includes(project.priority) && (!project.nextAction || !project.nextActionDate || !project.hasValidContact)).length;
@@ -1969,7 +2018,7 @@ function ManagementPage({ projects, operations, users, roleKey, onCreate, onImpo
     const keys = new Set([...Object.keys(log.oldData ?? {}), ...Object.keys(log.newData ?? {})]);
     return [...keys].filter((key) => JSON.stringify(log.oldData?.[key]) !== JSON.stringify(log.newData?.[key])).join("、") || "无字段差异";
   };
-  const templateHeaders = [{ key: "name", label: "项目名称" }, { key: "account", label: "客户主体" }, { key: "contactName", label: "关键联系人" }, { key: "contactMobile", label: "联系人手机号" }, { key: "contactEmail", label: "联系人邮箱" }, { key: "category", label: "项目类型" }, { key: "region", label: "经营区域" }, { key: "province", label: "省份" }, { key: "city", label: "城市" }, { key: "district", label: "区县" }, { key: "adcode", label: "行政区划代码" }, { key: "longitude", label: "经度" }, { key: "latitude", label: "纬度" }, { key: "amount", label: "金额（万元）" }, { key: "owner", label: "负责人" }, { key: "presales", label: "售前负责人" }, { key: "stage", label: "销售阶段" }, { key: "health", label: "健康度" }, { key: "priority", label: "优先级" }, { key: "是否直签", label: "是否直签" }, { key: "集成商", label: "集成商" }, { key: "交付伙伴", label: "交付伙伴" }, { key: "nextAction", label: "下一步动作" }, { key: "nextActionDate", label: "计划日期" }, { key: "expectedClose", label: "预计成交日期" }, { key: "source", label: "数据来源" }, { key: "risk", label: "风险说明" }];
+  const templateHeaders = [{ key: "name", label: "项目名称" }, { key: "account", label: "客户主体" }, { key: "contactName", label: "关键联系人" }, { key: "contactMobile", label: "联系人手机号" }, { key: "contactEmail", label: "联系人邮箱" }, { key: "category", label: "项目类型" }, { key: "referralUnit", label: "牵线单位" }, { key: "region", label: "经营区域" }, { key: "province", label: "省份" }, { key: "city", label: "城市" }, { key: "district", label: "区县" }, { key: "adcode", label: "行政区划代码" }, { key: "longitude", label: "经度" }, { key: "latitude", label: "纬度" }, { key: "amount", label: "金额（万元）" }, { key: "owner", label: "负责人" }, { key: "presales", label: "售前负责人" }, { key: "stage", label: "销售阶段" }, { key: "health", label: "健康度" }, { key: "priority", label: "优先级" }, { key: "requirementDescription", label: "项目需求描述" }, { key: "decisionChainDescription", label: "决策链描述" }, { key: "competitorDescription", label: "竞争对手描述" }, { key: "是否直签", label: "是否直签" }, { key: "集成商", label: "集成商" }, { key: "交付伙伴", label: "交付伙伴" }, { key: "nextAction", label: "下一步动作" }, { key: "nextActionDate", label: "计划日期" }, { key: "expectedClose", label: "预计成交日期" }, { key: "source", label: "数据来源" }, { key: "risk", label: "风险说明" }];
   const downloadTemplate = () => exportCsv("营销作战地图_导入模板.csv", [], templateHeaders);
   const exportAuditLogs = () => exportCsv("营销作战地图_审计日志.csv", operations.auditLogs.map((log) => ({
     time: formatDateTime(log.createdAt), table: log.table, record: log.recordId, action: log.action,
@@ -1985,7 +2034,7 @@ function ManagementPage({ projects, operations, users, roleKey, onCreate, onImpo
         <button type="button" onClick={() => setAuditOpen(true)}><SafetyCertificateOutlined /><span><strong>审计追溯</strong><small>查看数据库字段变更与操作人</small></span><RightOutlined /></button>
       </section>
       <div className="management-grid">
-        <article className="quality-card"><header><div><p>DATA QUALITY</p><h2>数据质量概览</h2></div><strong>{qualityScore}<small>分</small></strong></header>{Object.entries({ "区县及区划代码完整率": quality.region, "负责人完整率": quality.owner, "下一步动作完整率": quality.next, "有效联系人覆盖率": quality.contact }).map(([label, value]) => <div className="quality-row" key={label}><span>{label}</span><b><i style={{ width: `${value}%` }} /></b><strong>{value}%</strong></div>)}<footer><InfoCircleOutlined /> 当前存在 {highPriorityIssues} 条高优先级数据质量问题</footer></article>
+        <article className="quality-card"><header><div><p>DATA QUALITY</p><h2>数据质量概览</h2></div><strong>{qualityScore}<small>分</small></strong></header>{Object.entries({ "区县及区划代码完整率": quality.region, "负责人完整率": quality.owner, "下一步动作完整率": quality.next, "有效联系人覆盖率": quality.contact, "政府项目牵线单位完整率": quality.referral }).map(([label, value]) => <div className="quality-row" key={label}><span>{label}</span><b><i style={{ width: `${value}%` }} /></b><strong>{value}%</strong></div>)}<footer><InfoCircleOutlined /> 当前存在 {highPriorityIssues} 条高优先级数据质量问题</footer></article>
         <article className="source-card"><header><div><p>DATA SOURCES</p><h2>数据库来源分布</h2></div><GhostButton onClick={onRefresh}><ReloadOutlined /> 刷新</GhostButton></header><div>{sources.map((source) => <button type="button" key={source.name} disabled><i className="source-dot" /><span><strong>{source.name}</strong><small>最近更新 {formatDateTime(source.updatedAt)}</small></span><em>{source.count} 条</em><b>已入库</b></button>)}{!sources.length && <div className="empty-state"><DatabaseOutlined /><strong>暂无项目数据</strong><span>新建或导入项目后将在此显示真实来源</span></div>}</div></article>
       </div>
       <article className="history-card"><header><div><p>IMPORT HISTORY</p><h2>最近导入任务</h2></div></header><table className="data-table"><thead><tr><th>文件名称</th><th>操作人</th><th>总行数</th><th>成功</th><th>失败</th><th>完成时间</th><th>结果</th></tr></thead><tbody>{history.map((item) => <tr key={item.id}><td><FileExcelOutlined /> <strong>{item.file}</strong></td><td>{item.user}</td><td>{item.rows}</td><td className="success-text">{item.success}</td><td className={item.failed ? "danger-text" : ""}>{item.failed}</td><td>{formatDateTime(item.completedAt || item.createdAt)}</td><td><span className={`task-result ${item.status !== "completed" ? "task-result--warning" : ""}`}>{{ pending: "等待处理", validating: "校验中", completed: "导入成功", partial: "部分成功", failed: "导入失败" }[item.status] ?? item.status}</span></td></tr>)}{!history.length && <tr><td colSpan="7"><div className="empty-state"><FileExcelOutlined /><strong>暂无导入记录</strong><span>首次批量导入后将自动记录任务结果</span></div></td></tr>}</tbody></table></article>

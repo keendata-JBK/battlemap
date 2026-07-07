@@ -1272,6 +1272,12 @@ button:disabled {
   gap: 7px;
 }
 
+.map-legend span b {
+  margin-left: auto;
+  color: #8fb1da;
+  font-size: 9px;
+}
+
 .legend-dot {
   width: 8px;
   height: 8px;
@@ -1291,12 +1297,32 @@ button:disabled {
   background: #13b7e9;
 }
 
+.legend-bubble {
+  flex: 0 0 auto;
+  border: 1px solid rgba(169, 234, 255, 0.9);
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #b9f4ff 0, #39d7ff 28%, #1677ff 72%, #093a9b 100%);
+  box-shadow: 0 0 12px rgba(53, 209, 255, 0.6);
+}
+
+.legend-bubble--large {
+  width: 13px;
+  height: 13px;
+}
+
+.legend-bubble--small {
+  width: 8px;
+  height: 8px;
+}
+
 .project-drawer {
   position: absolute;
   right: 18px;
   bottom: 18px;
   z-index: 11;
-  width: min(360px, calc(100% - 36px));
+  width: min(410px, calc(100% - 36px));
+  max-height: calc(100% - 36px);
+  overflow-y: auto;
   padding: 15px;
   border: 1px solid rgba(126, 183, 244, 0.46);
   border-radius: 9px;
@@ -1372,6 +1398,11 @@ button:disabled {
   border-bottom: 1px solid rgba(138, 187, 240, 0.16);
 }
 
+.project-drawer dl > div.drawer-description-row {
+  align-items: start;
+  padding: 8px 0;
+}
+
 .project-drawer dt {
   color: #9eb8d9;
   font-size: 9px;
@@ -1384,6 +1415,16 @@ button:disabled {
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.project-drawer dd.drawer-description {
+  display: -webkit-box;
+  overflow: hidden;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 .project-drawer dd.money {
@@ -1852,6 +1893,10 @@ button:disabled {
 
 .data-table .align-right {
   text-align: right;
+}
+
+.cell-muted {
+  color: #9aa5b5;
 }
 
 .table-title {
@@ -2843,9 +2888,9 @@ button:disabled {
 }
 
 .form-grid input,
-.form-grid select {
+.form-grid select,
+.form-grid textarea {
   width: 100%;
-  height: 37px;
   padding: 0 10px;
   border: 1px solid #d8e0ea;
   border-radius: 5px;
@@ -2854,8 +2899,22 @@ button:disabled {
   font-size: 11px;
 }
 
+.form-grid input,
+.form-grid select {
+  height: 37px;
+}
+
+.form-grid textarea {
+  min-height: 72px;
+  padding: 9px 10px;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
 .form-grid input:focus,
-.form-grid select:focus {
+.form-grid select:focus,
+.form-grid textarea:focus {
   border-color: #6faeff;
   box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.08);
 }

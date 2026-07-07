@@ -4,6 +4,7 @@ import { BarChart, EffectScatterChart, FunnelChart, LineChart, PieChart } from "
 import { GeoComponent, GridComponent, LegendComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 import { CATEGORY_META } from "./data.js";
+import { buildProjectSymbolOffsets, buildProvinceAggregates, REFERRAL_UNIT_FALLBACK } from "./services/mapPresentation.js";
 
 echarts.use([
   BarChart,
@@ -65,6 +66,9 @@ export function ChinaBattleMap({
   mapKey,
   level = "country",
   drillDisabled = false,
+  governmentReferralMode = false,
+  referralUnitColorMap = {},
+  aggregateMode = false,
 }) {
   const mapName = useMemo(() => {
     if (!geoJson) return null;
@@ -74,7 +78,8 @@ export function ChinaBattleMap({
   }, [geoJson, mapKey]);
 
   const option = useMemo(() => {
-    const points = projects.map((project) => ({
+    const symbolOffsets = buildProjectSymbolOffsets(projects);
+    const projectPoints = projects.map((project) => ({
       name: project.name,
       projectId: project.id,
       value: [...project.coordinates, project.amount],
@@ -82,15 +87,41 @@ export function ChinaBattleMap({
       city: project.city,
       district: project.district,
       health: project.health,
+      referralUnit: project.referralUnit?.trim() || REFERRAL_UNIT_FALLBACK,
+      symbolOffset: symbolOffsets[project.id] ?? [0, 0],
       itemStyle: {
         color:
-          project.health === "red"
+          governmentReferralMode
+            ? referralUnitColorMap[project.referralUnit?.trim() || REFERRAL_UNIT_FALLBACK] ?? "#8a98ac"
+            : project.health === "red"
             ? "#ff5f57"
             : project.health === "yellow"
               ? "#ff9d2d"
               : CATEGORY_META[project.category]?.color ?? "#1687ff",
       },
     }));
+    const aggregatePoints = buildProvinceAggregates(projects, geoJson).map((aggregate) => ({
+      name: aggregate.province,
+      aggregate: true,
+      featureProperties: aggregate.featureProperties,
+      projectCount: aggregate.projectCount,
+      value: [...aggregate.coordinates, aggregate.amount],
+      itemStyle: {
+        color: {
+          type: "radial",
+          x: 0.36,
+          y: 0.3,
+          r: 0.88,
+          colorStops: [
+            { offset: 0, color: "#b9f4ff" },
+            { offset: 0.22, color: "#39d7ff" },
+            { offset: 0.72, color: "#1677ff" },
+            { offset: 1, color: "#093a9b" },
+          ],
+        },
+      },
+    }));
+    const points = aggregateMode ? aggregatePoints : projectPoints;
 
     if (!mapName) return {};
 
@@ -105,9 +136,13 @@ export function ChinaBattleMap({
         extraCssText: "box-shadow:0 10px 28px rgba(0,0,0,.25);border-radius:8px;padding:10px 12px;",
         formatter(params) {
           if (params.componentSubType === "effectScatter") {
+            if (params.data.aggregate) {
+              return `<strong>${params.data.name}</strong><br/>项目 ${params.data.projectCount} 个<br/>预计成交金额 ${Number(params.data.value[2]).toLocaleString()} 万元<br/><small>点击下钻并展开项目</small>`;
+            }
             const project = projects.find((item) => item.id === params.data.projectId);
             if (!project) return params.name;
-            return `<strong>${project.name}</strong><br/>${project.city} · ${project.district}<br/>商机金额 ${project.amount.toLocaleString()} 万元`;
+            const referral = project.category === "government" ? `<br/>牵线单位 ${project.referralUnit || REFERRAL_UNIT_FALLBACK}` : "";
+            return `<strong>${project.name}</strong><br/>${project.city} · ${project.district}<br/>预计成交金额 ${project.amount.toLocaleString()} 万元${referral}`;
           }
           const feature = geoJson.features.find((item) => item.properties?.name === params.name);
           const canDrill = ["province", "city", "district"].includes(feature?.properties?.level);
@@ -128,9 +163,22 @@ export function ChinaBattleMap({
           fontSize: 10,
         },
         itemStyle: {
-          areaColor: "#0c3b7f",
-          borderColor: "#2e80de",
+          areaColor: {
+            type: "linear",
+            x: 0,
+            y: 0,
+            x2: 1,
+            y2: 1,
+            colorStops: [
+              { offset: 0, color: "#104d99" },
+              { offset: 0.55, color: "#0a3474" },
+              { offset: 1, color: "#061f52" },
+            ],
+          },
+          borderColor: "rgba(76, 174, 255, .78)",
           borderWidth: 1,
+          shadowBlur: 8,
+          shadowColor: "rgba(3, 115, 255, .2)",
         },
         emphasis: {
           label: { color: "#fff", fontWeight: 700 },
@@ -148,36 +196,47 @@ export function ChinaBattleMap({
           data: points,
           symbol: "circle",
           symbolSize(value, params) {
+            if (params.data.aggregate) return Math.max(30, Math.min(72, 22 + Math.sqrt(Math.max(value[2], 0)) * 0.35));
             const base = Math.max(13, Math.min(30, Math.sqrt(value[2]) / 2.7));
             return params.data.projectId === selectedProjectId ? base + 8 : base;
           },
-          rippleEffect: { scale: 2.2, brushType: "stroke", number: 2 },
+          rippleEffect: { scale: aggregateMode ? 3.4 : 2.2, brushType: "stroke", number: aggregateMode ? 3 : 2 },
           itemStyle: {
             borderColor: "rgba(255,255,255,.74)",
             borderWidth: 1,
-            shadowBlur: 14,
-            shadowColor: "rgba(0, 128, 255, .48)",
+            shadowBlur: aggregateMode ? 26 : 14,
+            shadowColor: aggregateMode ? "rgba(53, 209, 255, .72)" : "rgba(0, 128, 255, .48)",
           },
           label: {
             show: true,
             position: "right",
-            formatter: (params) => params.data.city,
+            formatter: (params) => params.data.aggregate
+              ? `{province|${params.data.name}}\n{count|${params.data.projectCount} 个项目}`
+              : governmentReferralMode ? params.data.referralUnit : params.data.city,
             color: "#fff",
             fontWeight: 600,
             fontSize: 10,
             textBorderColor: "#062458",
             textBorderWidth: 3,
+            rich: {
+              province: { color: "#fff", fontSize: 11, fontWeight: 800, lineHeight: 16 },
+              count: { color: "#a9eaff", fontSize: 9, fontWeight: 600, lineHeight: 14 },
+            },
           },
           emphasis: { scale: 1.18 },
           zlevel: 3,
         },
       ],
     };
-  }, [geoJson, level, mapName, projects, selectedProjectId]);
+  }, [aggregateMode, geoJson, governmentReferralMode, level, mapName, projects, referralUnitColorMap, selectedProjectId]);
 
   const events = useMemo(
     () => ({
       click(params) {
+        if (params.componentSubType === "effectScatter" && params.data?.aggregate && params.data.featureProperties) {
+          if (!drillDisabled) onDrill(params.data.featureProperties);
+          return;
+        }
         if (params.componentSubType === "effectScatter" && params.data?.projectId) {
           onSelectProject(params.data.projectId);
           return;

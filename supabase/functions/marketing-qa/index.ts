@@ -50,7 +50,7 @@ async function processJob(
 
     const [profileResult, projectResult, alertResult, weeklyResult, dailyReportResult] = await Promise.all([
       callerClient.from("profiles").select("display_name,role").eq("id", requesterId).single(),
-      callerClient.from("project_dashboard").select("id,project_code,name,customer_name,category,region,province,city,district,amount,stage,probability,owner_name,presales_name,health,priority,next_action,next_action_date,expected_close,source,risk,is_direct_contract,integrator,delivery_partners,updated_at").order("updated_at", { ascending: false }).limit(5000),
+      callerClient.from("project_dashboard").select("id,project_code,name,customer_name,category,region,province,city,district,amount,stage,probability,owner_name,presales_name,health,priority,next_action,next_action_date,expected_close,source,risk,description,decision_chain_description,competitor_description,referral_unit,is_direct_contract,integrator,delivery_partners,updated_at").order("updated_at", { ascending: false }).limit(5000),
       callerClient.from("alerts").select("level,alert_type,title,description,status,due_at,created_at").order("created_at", { ascending: false }).limit(500),
       callerClient.from("weekly_updates").select("owner_id,week_start,status,last_week_summary,this_week_goal,risks,support_needed,actions,submitted_at,updated_at").order("week_start", { ascending: false }).limit(200),
       callerClient.from("daily_report_entries").select("project_id,salesperson_id,report_date,activity_type,content,customer_contact,match_confidence").order("report_date", { ascending: false }).limit(5000),

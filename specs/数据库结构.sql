@@ -327,7 +327,9 @@ CREATE TABLE crm_opportunity (
     health_status       varchar(20) NOT NULL DEFAULT 'GREEN'
                         CHECK (health_status IN ('GREEN', 'YELLOW', 'RED', 'GRAY')),
     source_code         varchar(100),
+    referral_unit       varchar(300),
     requirement_summary text,
+    decision_chain_summary text,
     budget_status       varchar(50),
     procurement_method  varchar(100),
     competitor_summary  text,
@@ -893,6 +895,7 @@ SELECT
     NULL::varchar AS stage_name,
     NULL::numeric(18, 2) AS amount,
     CASE WHEN a.lifecycle_status IN ('DORMANT', 'INVALID') THEN 'GRAY' ELSE 'GREEN' END AS health_status,
+    NULL::varchar(300) AS referral_unit,
     NULL::timestamptz AS next_action_at,
     a.updated_at
 FROM crm_account a
@@ -920,6 +923,7 @@ SELECT
     s.stage_name,
     o.amount,
     o.health_status,
+    o.referral_unit,
     o.next_action_at,
     o.updated_at
 FROM crm_opportunity o
