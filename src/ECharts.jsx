@@ -196,16 +196,16 @@ export function ChinaBattleMap({
           data: points,
           symbol: "circle",
           symbolSize(value, params) {
-            if (params.data.aggregate) return Math.max(30, Math.min(72, 22 + Math.sqrt(Math.max(value[2], 0)) * 0.35));
-            const base = Math.max(13, Math.min(30, Math.sqrt(value[2]) / 2.7));
-            return params.data.projectId === selectedProjectId ? base + 8 : base;
+            if (params.data.aggregate) return Math.max(18, Math.min(36, 13 + Math.sqrt(Math.max(value[2], 0)) * 0.18));
+            const base = Math.max(9, Math.min(18, 7 + Math.sqrt(Math.max(value[2], 0)) / 6));
+            return params.data.projectId === selectedProjectId ? base + 4 : base;
           },
-          rippleEffect: { scale: aggregateMode ? 3.4 : 2.2, brushType: "stroke", number: aggregateMode ? 3 : 2 },
+          rippleEffect: { scale: aggregateMode ? 2 : 1.7, brushType: "stroke", number: 2 },
           itemStyle: {
             borderColor: "rgba(255,255,255,.74)",
             borderWidth: 1,
-            shadowBlur: aggregateMode ? 26 : 14,
-            shadowColor: aggregateMode ? "rgba(53, 209, 255, .72)" : "rgba(0, 128, 255, .48)",
+            shadowBlur: aggregateMode ? 12 : 8,
+            shadowColor: aggregateMode ? "rgba(53, 209, 255, .48)" : "rgba(0, 128, 255, .38)",
           },
           label: {
             show: true,
@@ -223,7 +223,7 @@ export function ChinaBattleMap({
               count: { color: "#a9eaff", fontSize: 9, fontWeight: 600, lineHeight: 14 },
             },
           },
-          emphasis: { scale: 1.18 },
+          emphasis: { scale: 1.12 },
           zlevel: 3,
         },
       ],

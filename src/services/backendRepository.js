@@ -165,6 +165,18 @@ function toProjectPayload(form, customerId, ownerId, presalesId, currentUserId) 
   };
 }
 
+const PROJECT_CONTEXT_COLUMNS = ["description", "decision_chain_description", "competitor_description", "referral_unit"];
+
+export function isProjectContextSchemaError(error) {
+  const message = String(error?.message ?? "");
+  const mentionsContextColumn = PROJECT_CONTEXT_COLUMNS.some((column) => message.includes(column));
+  return mentionsContextColumn && (error?.code === "PGRST204" || /schema cache/i.test(message));
+}
+
+export function stripProjectContextFields(payload) {
+  return Object.fromEntries(Object.entries(payload).filter(([key]) => !PROJECT_CONTEXT_COLUMNS.includes(key)));
+}
+
 async function resolveProfileId(displayName, fallbackUserId) {
   if (!displayName) return fallbackUserId;
   const { data, error } = await supabase.from("profiles").select("id").eq("display_name", displayName).eq("active", true).limit(1).maybeSingle();
@@ -484,10 +496,18 @@ export async function saveBackendProject(form, existingProject, currentUserId) {
   const payload = toProjectPayload(form, customerId, ownerId, presalesId, currentUserId);
   if (existingProject) delete payload.created_by;
 
-  const query = existingProject
-    ? supabase.from("projects").update(payload).eq("id", existingProject.id)
-    : supabase.from("projects").insert(payload);
-  const { data, error } = await query.select("id").single();
+  const persist = (nextPayload) => {
+    const query = existingProject
+      ? supabase.from("projects").update(nextPayload).eq("id", existingProject.id)
+      : supabase.from("projects").insert(nextPayload);
+    return query.select("id").single();
+  };
+  let { data, error } = await persist(payload);
+  let contextFieldsSkipped = false;
+  if (error && isProjectContextSchemaError(error)) {
+    ({ data, error } = await persist(stripProjectContextFields(payload)));
+    contextFieldsSkipped = !error;
+  }
   if (error) throw error;
 
   const { data: row, error: reloadError } = await supabase.from("project_dashboard").select("*").eq("id", data.id).single();
@@ -506,7 +526,7 @@ export async function saveBackendProject(form, existingProject, currentUserId) {
     created_by: currentUserId,
   });
   if (activityError) throw activityError;
-  return mapProject(row);
+  return { ...mapProject(row), contextFieldsSkipped };
 }
 
 export async function softDeleteBackendProjects(ids) {

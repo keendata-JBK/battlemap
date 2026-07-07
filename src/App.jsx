@@ -260,7 +260,7 @@ function Toast({ toast, onClose }) {
   if (!toast) return null;
   return (
     <div className={`toast toast--${toast.type ?? "success"}`} role="status">
-      {toast.type === "error" ? <InfoCircleOutlined /> : <CheckCircleFilled />}
+      {toast.type === "error" || toast.type === "warning" ? <InfoCircleOutlined /> : <CheckCircleFilled />}
       <span>{toast.message}</span>
     </div>
   );
@@ -2240,9 +2240,14 @@ export function App() {
   const saveProject = async (form) => {
     setSavingProject(true);
     try {
-      await saveBackendProject(form, editingProject, auth.session.user.id);
+      const savedProject = await saveBackendProject(form, editingProject, auth.session.user.id);
       await refreshBackendData();
-      notify(editingProject ? "项目已更新" : "新项目已创建并同步到地图");
+      notify(
+        savedProject.contextFieldsSkipped
+          ? `${editingProject ? "项目已更新" : "项目已创建"}；当前数据库未启用新增描述字段，本次仅保存原有字段`
+          : editingProject ? "项目已更新" : "新项目已创建并同步到地图",
+        savedProject.contextFieldsSkipped ? "warning" : "success",
+      );
       setFormOpen(false);
       setEditingProject(null);
     } catch (error) {

@@ -3273,6 +3273,12 @@ button:disabled {
   color: #cc3f3f;
 }
 
+.toast--warning {
+  border-color: #f2d29a;
+  background: #fff9ed;
+  color: #a66508;
+}
+
 .weekly-workspace {
   display: flex;
   flex-direction: column;
