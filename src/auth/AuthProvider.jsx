@@ -87,7 +87,9 @@ export function AuthProvider({ children }) {
     },
     async requestPasswordReset(email) {
       setError("");
-      const redirectTo = new URL(import.meta.env.BASE_URL, window.location.origin).toString();
+      const redirectTo = new URL(window.location.href);
+      redirectTo.hash = "";
+      redirectTo.search = "";
       const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
       if (resetError) {
         setError(resetError.message);

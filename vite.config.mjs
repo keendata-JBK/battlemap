@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { resolve } from "node:path";
 
 export default defineConfig({
   base: process.env.VITE_BASE_PATH || "/battlemap/",
@@ -16,6 +17,10 @@ export default defineConfig({
     outDir: "docs",
     emptyOutDir: true,
     rollupOptions: {
+      input: {
+        main: resolve(import.meta.dirname, "index.html"),
+        agent: resolve(import.meta.dirname, "agent/index.html"),
+      },
       output: {
         manualChunks(id) {
           if (id.includes("china-map-geojson")) return "map-data";

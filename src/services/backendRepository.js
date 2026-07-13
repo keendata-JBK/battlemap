@@ -465,6 +465,17 @@ export async function loadSalesReport(reportId) {
   return mapSalesReport(data);
 }
 
+export async function listSalesReports(limit = 20) {
+  const { data, error } = await supabase
+    .from("sales_reports")
+    .select("id,requester_id,report_type,period_start,period_end,title,status,content,markdown,error_message,model,data_scope,project_count,generated_automatically,created_at,updated_at,finished_at")
+    .order("period_end", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []).map(mapSalesReport);
+}
+
 export async function importDailyReport(rawText, defaultDate, entries) {
   const payload = entries.map((entry) => ({
     projectId: entry.projectId,

@@ -51,3 +51,9 @@ npm run build:production
 - [后端部署与安全运维](specs/后端部署与安全运维.md)
 
 系统不再提供演示数据回退。未配置 Supabase 时会直接阻止进入业务页面；配置后强制企业账号登录，并由 PostgreSQL RLS 在服务端执行数据隔离。项目、提醒、用户、联系人覆盖率、导入任务和审计日志均以数据库记录为唯一数据源。
+
+## 管理层手机端
+
+销售 Agent 已提供独立的手机端入口：<https://keendata-jbk.github.io/battlemap/agent/>。
+
+它与主站复用同一企业账号、数据权限、销售 Agent 与报告服务；支持文本和浏览器语音输入、异步对话结果、周报/月报生成，以及 PDF 报告下载。发布时请使用带生产 `VITE_SUPABASE_URL` 与 `VITE_SUPABASE_ANON_KEY` 的构建流程，避免把未配置后端的静态包发布到 Pages。
