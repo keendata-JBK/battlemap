@@ -203,7 +203,7 @@ function MobileWorkspace({ profile, onSignOut }) {
 
   const persistMessages = (nextMessages) => {
     const payload = normalizeMessages(nextMessages);
-    historyQueueRef.current = historyQueueRef.current.catch(() => undefined).then(() => saveWorkspaceState("mobile_sales_agent_history", { messages: payload }, profile.id));
+    historyQueueRef.current = historyQueueRef.current.catch(() => undefined).then(() => saveWorkspaceState("marketing_qa_history", { messages: payload }, profile.id));
     return historyQueueRef.current;
   };
 
@@ -215,7 +215,7 @@ function MobileWorkspace({ profile, onSignOut }) {
 
   useEffect(() => {
     let active = true;
-    Promise.all([loadWorkspaceState("mobile_sales_agent_history"), listSalesReports()])
+    Promise.all([loadWorkspaceState("marketing_qa_history"), listSalesReports()])
       .then(([saved, savedReports]) => {
         if (!active) return;
         const savedMessages = Array.isArray(saved?.messages) ? saved.messages.filter((item) => item?.role && item?.content).slice(-40) : [];
