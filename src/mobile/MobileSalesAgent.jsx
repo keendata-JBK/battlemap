@@ -114,12 +114,14 @@ function MobileLogin() {
   );
 }
 
-function VoiceButton({ onText, disabled }) {
+function VoiceButton({ onText, disabled = false, onListeningChange, onUnavailable }) {
   const recognitionRef = useRef(null);
   const [listening, setListening] = useState(false);
-  const [unsupported, setUnsupported] = useState(false);
 
-  useEffect(() => () => recognitionRef.current?.abort?.(), []);
+  useEffect(() => () => {
+    recognitionRef.current?.abort?.();
+    onListeningChange?.(false);
+  }, [onListeningChange]);
 
   const toggleVoice = () => {
     if (listening) {
@@ -128,8 +130,7 @@ function VoiceButton({ onText, disabled }) {
     }
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!Recognition) {
-      setUnsupported(true);
-      window.setTimeout(() => setUnsupported(false), 3600);
+      onUnavailable?.("当前浏览器不支持语音识别，请使用最新版 Safari 或 Chrome，或改用文字输入。");
       return;
     }
     let finalText = "";
@@ -137,7 +138,10 @@ function VoiceButton({ onText, disabled }) {
     recognition.lang = "zh-CN";
     recognition.interimResults = true;
     recognition.continuous = false;
-    recognition.onstart = () => setListening(true);
+    recognition.onstart = () => {
+      setListening(true);
+      onListeningChange?.(true);
+    };
     recognition.onresult = (event) => {
       let interimText = "";
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
@@ -147,8 +151,16 @@ function VoiceButton({ onText, disabled }) {
       }
       onText(`${finalText}${interimText}`);
     };
-    recognition.onerror = () => setListening(false);
-    recognition.onend = () => setListening(false);
+    recognition.onerror = (event) => {
+      setListening(false);
+      onListeningChange?.(false);
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") onUnavailable?.("未获得麦克风权限，请在浏览器设置中允许此网站使用麦克风后重试。");
+      else if (event.error !== "aborted") onUnavailable?.("没有识别到语音，请靠近麦克风后再试一次。");
+    };
+    recognition.onend = () => {
+      setListening(false);
+      onListeningChange?.(false);
+    };
     recognitionRef.current = recognition;
     try {
       recognition.start();
@@ -162,7 +174,6 @@ function VoiceButton({ onText, disabled }) {
       <button type="button" className={listening ? "is-listening" : ""} onClick={toggleVoice} disabled={disabled} aria-label={listening ? "结束语音输入" : "语音输入"}>
         {listening ? <StopOutlined /> : <AudioOutlined />}
       </button>
-      {unsupported && <span>当前浏览器不支持语音输入</span>}
     </div>
   );
 }
@@ -198,6 +209,7 @@ function MobileWorkspace({ profile, onSignOut }) {
   const [downloading, setDownloading] = useState(false);
   const [notice, setNotice] = useState("");
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [voiceListening, setVoiceListening] = useState(false);
   const messageEndRef = useRef(null);
   const historyQueueRef = useRef(Promise.resolve());
   const asking = submitting || Boolean(activeJobId);
@@ -378,10 +390,10 @@ function MobileWorkspace({ profile, onSignOut }) {
         <form className="mobile-composer" onSubmit={(event) => { event.preventDefault(); submitQuestion(); }}>
           <div className="mobile-composer__surface">
             <textarea value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submitQuestion(); } }} placeholder="输入问题，或使用语音输入" rows="1" />
-            {!question.trim() && <VoiceButton disabled={asking} onText={setQuestion} />}
+            <VoiceButton onText={setQuestion} onListeningChange={setVoiceListening} onUnavailable={setNotice} />
             {question.trim() && <button type="submit" className="mobile-send" disabled={asking} aria-label="发送"><SendOutlined /></button>}
           </div>
-          <small>销售数据受企业权限保护</small>
+          <small>{voiceListening ? "正在听，请开始说话…" : "销售数据受企业权限保护"}</small>
         </form>
       </section> : <section className="mobile-reports">
         <div className="mobile-reports__intro"><span>销售经营报告</span><h1>随时获取经营结论</h1><p>报告覆盖项目行动、风险、热冷项目与管理建议。</p></div>
