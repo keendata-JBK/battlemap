@@ -87,6 +87,7 @@ import {
   loadProjectActivities,
   loadProjectDailyReports,
   importBackendProjects,
+  applyCognitiveAction,
   saveBackendProject,
   saveWeeklyUpdate,
   saveWorkspaceState,
@@ -99,6 +100,7 @@ import {
 import logo from "./assets/keendata-logo.png";
 
 const NAV_ITEMS = [
+  { key: "aiActions", label: "AI 认知行动", icon: RobotOutlined },
   { key: "map", label: "作战地图", icon: EnvironmentOutlined },
   { key: "workbench", label: "数据工作台", icon: AppstoreOutlined },
   { key: "analysis", label: "BI 分析", icon: BarChartOutlined },
@@ -848,6 +850,163 @@ function PageHeader({ eyebrow, title, description, actions }) {
       </div>
       <div className="page-header__actions">{actions}</div>
     </header>
+  );
+}
+
+function actionDate(offset = 1) {
+  const date = new Date();
+  date.setHours(12, 0, 0, 0);
+  date.setDate(date.getDate() + offset);
+  return date.toISOString().slice(0, 10);
+}
+
+function dateIsOverdue(value) {
+  if (!value) return true;
+  const date = new Date(`${value}T12:00:00`);
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
+  return date < today;
+}
+
+function buildCognitiveActions(projects, alerts) {
+  const projectsById = new Map(projects.map((project) => [project.id, project]));
+  const pendingAlerts = alerts
+    .filter((alert) => alert.status === "待处理" && projectsById.has(alert.projectId))
+    .sort((a, b) => ({ red: 0, yellow: 1, info: 2 }[a.level] - { red: 0, yellow: 1, info: 2 }[b.level]));
+  const seen = new Set();
+  const fromAlert = pendingAlerts.map((alert) => {
+    const project = projectsById.get(alert.projectId);
+    if (seen.has(project.id)) return null;
+    seen.add(project.id);
+    const dueDate = dateIsOverdue(project.nextActionDate) ? actionDate(1) : project.nextActionDate;
+    const nextAction = project.nextAction?.trim()
+      ? `处理「${alert.title}」：${project.nextAction.trim()}`
+      : `处理「${alert.title}」并与客户确认下一步推进安排`;
+    return {
+      id: `alert-${alert.id}`,
+      project,
+      level: alert.level,
+      title: alert.title,
+      evidence: alert.description || `项目当前处于${getStage(project.stage).label}阶段，需先完成风险闭环。`,
+      nextAction,
+      nextActionDate: dueDate,
+      reason: "来自实时提醒中心；确认后只写回下一步动作与计划日期。",
+    };
+  }).filter(Boolean);
+  const fromProject = projects
+    .filter((project) => !seen.has(project.id) && (project.health === "red" || dateIsOverdue(project.nextActionDate)))
+    .sort((a, b) => Number(a.health !== "red") - Number(b.health !== "red"))
+    .slice(0, Math.max(0, 4 - fromAlert.length))
+    .map((project) => ({
+      id: `project-${project.id}`,
+      project,
+      level: project.health === "red" ? "red" : "yellow",
+      title: project.health === "red" ? "高风险项目需明确责任动作" : "下一步动作已到期",
+      evidence: project.risk && project.risk !== "未填写" ? project.risk : `当前下一步动作${project.nextActionDate ? `计划于 ${project.nextActionDate}` : "尚未设置"}。`,
+      nextAction: project.nextAction?.trim() || `联系${project.account}确认关键节点与后续安排`,
+      nextActionDate: actionDate(1),
+      reason: "依据项目健康度与计划日期生成；不会变更金额、阶段或负责人。",
+    }));
+  return [...fromAlert, ...fromProject].slice(0, 4);
+}
+
+function AICognitiveActionPage({ projects, alerts, roleKey, currentUserName, onAsk, onLoadJob, onApply, onViewProject, onToast }) {
+  const [selectedId, setSelectedId] = useState(null);
+  const [analysis, setAnalysis] = useState("");
+  const [analysisStatus, setAnalysisStatus] = useState("idle");
+  const [applyingId, setApplyingId] = useState(null);
+  const proposals = useMemo(() => buildCognitiveActions(projects, alerts), [projects, alerts]);
+  const selected = proposals.find((proposal) => proposal.id === selectedId) ?? proposals[0] ?? null;
+  const pendingCount = proposals.length;
+  const riskCount = projects.filter((project) => project.health === "red").length;
+  const actionPrompt = `请以${ROLE_PRESETS[roleKey]?.label ?? "当前角色"}视角，基于当前权限内的实时营销数据，输出一段不超过220字的经营行动分析。请按“优先事项、依据、建议顺序”组织；只引用真实项目和提醒，不要虚构数据，不要建议直接修改金额、阶段或负责人。`;
+
+  useEffect(() => {
+    if (selectedId && !proposals.some((proposal) => proposal.id === selectedId)) setSelectedId(null);
+  }, [proposals, selectedId]);
+
+  const runAnalysis = async () => {
+    setAnalysisStatus("submitting");
+    setAnalysis("");
+    try {
+      const job = await onAsk(actionPrompt);
+      const startedAt = Date.now();
+      const poll = async () => {
+        const current = await onLoadJob(job.jobId);
+        if (current.status === "completed") {
+          setAnalysis(current.answer || "AI 未返回可展示的行动分析。");
+          setAnalysisStatus("completed");
+          return;
+        }
+        if (current.status === "failed") {
+          setAnalysis(current.error || "AI 分析暂时未完成，请稍后重试。");
+          setAnalysisStatus("failed");
+          return;
+        }
+        if (Date.now() - startedAt > 90000) {
+          setAnalysis("AI 分析仍在处理，请稍后在 BI 分析中查看任务结果。");
+          setAnalysisStatus("failed");
+          return;
+        }
+        window.setTimeout(() => poll().catch((error) => {
+          setAnalysis(error.message || "AI 分析状态读取失败");
+          setAnalysisStatus("failed");
+        }), 2000);
+      };
+      setAnalysisStatus("processing");
+      window.setTimeout(() => poll().catch((error) => {
+        setAnalysis(error.message || "AI 分析状态读取失败");
+        setAnalysisStatus("failed");
+      }), 1200);
+    } catch (error) {
+      setAnalysis(error.message || "AI 分析启动失败");
+      setAnalysisStatus("failed");
+    }
+  };
+
+  const applySelected = async () => {
+    if (!selected) return;
+    setApplyingId(selected.id);
+    try {
+      await onApply(selected);
+      onToast(`已确认写回「${selected.project.name}」的下一步动作`);
+    } catch (error) {
+      onToast(error.message || "AI 动作写回失败", "error");
+    } finally {
+      setApplyingId(null);
+    }
+  };
+
+  return (
+    <div className="standard-page ai-action-page">
+      <PageHeader
+        eyebrow="AI COGNITIVE ACTION"
+        title="AI 认知行动"
+        description={`面向${ROLE_PRESETS[roleKey]?.label ?? "当前角色"} ${currentUserName}，基于当前权限内的实时项目与提醒生成行动建议。`}
+        actions={<PrimaryButton onClick={runAnalysis} disabled={analysisStatus === "submitting" || analysisStatus === "processing"}><RobotOutlined /> {analysisStatus === "submitting" || analysisStatus === "processing" ? "AI 正在分析" : "生成 AI 行动分析"}</PrimaryButton>}
+      />
+      <div className="ai-action-summary">
+        <article><img src="/battlemap/ai-assistant-avatar.png" alt="AI 行动助手" /><div><small>当前工作模式</small><strong>AI 先拟定，人来确认</strong><p>不直接修改金额、阶段或负责人</p></div></article>
+        <article><span className="ai-action-summary__danger"><WarningFilled /></span><div><small>高风险项目</small><strong>{riskCount} 个</strong><p>来自当前账号可见项目</p></div></article>
+        <article><span className="ai-action-summary__warning"><CalendarOutlined /></span><div><small>待我确认</small><strong>{pendingCount} 项</strong><p>确认后同步到项目活动</p></div></article>
+      </div>
+      <div className="ai-action-layout">
+        <section className="ai-action-panel ai-action-panel--list">
+          <header><div><p>TO CONFIRM</p><h2>待我确认</h2></div><span>{pendingCount}</span></header>
+          {proposals.length ? <div className="ai-action-list">{proposals.map((proposal) => <button type="button" key={proposal.id} className={selected?.id === proposal.id ? "is-selected" : ""} onClick={() => setSelectedId(proposal.id)}><i className={`ai-action-level ai-action-level--${proposal.level}`} /><span><strong>{proposal.project.name}</strong><small>{proposal.title}</small></span><RightOutlined /></button>)}</div> : <div className="ai-action-empty"><CheckCircleFilled /><strong>当前没有需要确认的动作</strong><p>系统将持续根据真实项目和提醒数据重新判断。</p></div>}
+        </section>
+        <section className="ai-action-panel ai-action-panel--detail">
+          {selected ? <>
+            <header><div><p>ACTION PROPOSAL</p><h2>{selected.project.name}</h2></div><StatusPill health={selected.project.health} /></header>
+            <div className="ai-action-evidence"><span><InfoCircleOutlined /></span><div><small>AI 判断依据</small><p>{selected.evidence}</p></div></div>
+            <div className="ai-action-fields"><label>建议下一步动作<textarea value={selected.nextAction} readOnly /></label><label>建议完成日期<input value={selected.nextActionDate} readOnly /></label></div>
+            <p className="ai-action-note"><SafetyCertificateOutlined /> {selected.reason}</p>
+            <footer><GhostButton onClick={() => onViewProject(selected.project)}>查看项目详情</GhostButton><PrimaryButton onClick={applySelected} disabled={applyingId === selected.id}>{applyingId === selected.id ? "正在写回" : "确认执行"} <CheckOutlined /></PrimaryButton></footer>
+          </> : <div className="ai-action-empty"><RobotOutlined /><strong>等待真实数据</strong><p>项目和提醒数据加载后，AI 会生成待确认动作。</p></div>}
+        </section>
+      </div>
+      <section className="ai-action-insight"><header><div><p>ROLE-BASED ANALYSIS</p><h2>AI 行动分析</h2></div><span>{analysisStatus === "completed" ? "已完成" : analysisStatus === "processing" || analysisStatus === "submitting" ? "分析中" : "按需生成"}</span></header>{analysis ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{analysis}</ReactMarkdown> : <p>点击“生成 AI 行动分析”，销售 Agent 将只读取你当前有权限查看的实时数据，形成可复核的经营建议。</p>}</section>
+    </div>
   );
 }
 
@@ -2257,6 +2416,16 @@ export function App() {
     }
   };
 
+  const applyAIProposal = async (proposal) => {
+    await applyCognitiveAction({
+      projectId: proposal.project.id,
+      nextAction: proposal.nextAction,
+      nextActionDate: proposal.nextActionDate,
+      summary: `${proposal.title}；${proposal.evidence}`,
+    }, auth.session.user.id);
+    await refreshBackendData();
+  };
+
   const confirmDelete = async () => {
     const ids = bulkDeleteIds.length ? bulkDeleteIds : deleteTarget ? [deleteTarget.id] : [];
     if (!ids.length) return;
@@ -2353,6 +2522,7 @@ export function App() {
 
   const page = (() => {
     switch (activePage) {
+      case "aiActions": return <AICognitiveActionPage projects={visibleProjects} alerts={alerts} roleKey={roleKey} currentUserName={currentUser.display_name} onAsk={askMarketingData} onLoadJob={loadMarketingDataJob} onApply={applyAIProposal} onViewProject={setDetailProject} onToast={notify} />;
       case "map": return <MapPage projects={visibleProjects} alerts={alerts} roleKey={roleKey} currentUserName={currentUser.display_name} selectedProjectId={selectedProjectId} onSelectProject={setSelectedProjectId} onGoToProject={setDetailProject} onOpenAlerts={() => setActivePage("alerts")} onRefresh={refreshBackendData} />;
       case "workbench": return <WorkbenchPage projects={visibleProjects} weeklyUpdates={operations.weeklyUpdates} dailyReportImports={operations.dailyReportImports} dailyReportEntries={operations.dailyReportEntries} users={directoryUsers} roleKey={roleKey} currentUserId={auth.session.user.id} currentUserName={currentUser.display_name} onSaveWeekly={saveSalesWeek} onAnalyzeDailyReport={analyzeSalesDailyReport} onLoadDailyReportJob={loadDailyReportAnalysisJob} onImportDailyReport={saveSalesDailyReport} onLoadDailyDraft={loadDailyReportDraft} onSaveDailyDraft={saveDailyReportDraft} onClearDailyDraft={clearDailyReportDraft} onCreate={openCreate} onView={setDetailProject} onEdit={openEdit} onDelete={setDeleteTarget} onBulkDelete={setBulkDeleteIds} />;
       case "analysis": return <AnalysisPage projects={visibleProjects} roleKey={roleKey} reports={operations.salesReports} onAsk={askMarketingData} onLoadJob={loadMarketingDataJob} onLoadHistory={loadMarketingHistory} onSaveHistory={saveMarketingHistory} onClearHistory={clearMarketingHistory} onCreateReport={createSalesReport} onLoadReport={loadSalesReport} onRefreshReports={refreshBackendData} />;

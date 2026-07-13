@@ -540,6 +540,32 @@ export async function saveBackendProject(form, existingProject, currentUserId) {
   return { ...mapProject(row), contextFieldsSkipped };
 }
 
+export async function applyCognitiveAction({ projectId, nextAction, nextActionDate, summary }, currentUserId) {
+  if (!projectId) throw new Error("未找到要执行动作的项目");
+  const safeAction = String(nextAction ?? "").trim().slice(0, 500);
+  const safeDate = String(nextActionDate ?? "").trim();
+  const safeSummary = String(summary ?? "").trim().slice(0, 800);
+  if (!safeAction || !/^\d{4}-\d{2}-\d{2}$/.test(safeDate)) {
+    throw new Error("AI 动作缺少有效的下一步动作或日期");
+  }
+
+  const { error: updateError } = await supabase
+    .from("projects")
+    .update({ next_action: safeAction, next_action_date: safeDate })
+    .eq("id", projectId);
+  if (updateError) throw updateError;
+
+  const { error: activityError } = await supabase.from("project_activities").insert({
+    project_id: projectId,
+    activity_type: "task",
+    content: `AI 认知行动已确认：${safeSummary || safeAction}`,
+    next_action: safeAction,
+    next_action_date: safeDate,
+    created_by: currentUserId,
+  });
+  if (activityError) throw activityError;
+}
+
 export async function softDeleteBackendProjects(ids) {
   const { error } = await supabase.from("projects").update({ deleted_at: new Date().toISOString() }).in("id", ids);
   if (error) throw error;
