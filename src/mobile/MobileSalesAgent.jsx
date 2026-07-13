@@ -197,9 +197,17 @@ function MobileWorkspace({ profile, onSignOut }) {
   const [generating, setGenerating] = useState("");
   const [downloading, setDownloading] = useState(false);
   const [notice, setNotice] = useState("");
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const messageEndRef = useRef(null);
   const historyQueueRef = useRef(Promise.resolve());
   const asking = submitting || Boolean(activeJobId);
+
+  const scrollToLatest = (behavior = "smooth") => {
+    window.requestAnimationFrame(() => {
+      messageEndRef.current?.scrollIntoView({ block: "end", behavior });
+      window.setTimeout(() => messageEndRef.current?.scrollIntoView({ block: "end", behavior }), 90);
+    });
+  };
 
   const persistMessages = (nextMessages) => {
     const payload = normalizeMessages(nextMessages);
@@ -232,7 +240,7 @@ function MobileWorkspace({ profile, onSignOut }) {
   }, []);
 
   useEffect(() => {
-    messageEndRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+    if (activeTab === "chat") scrollToLatest(messages.length > 2 ? "smooth" : "auto");
   }, [messages, submitting]);
 
   useEffect(() => {
@@ -303,6 +311,7 @@ function MobileWorkspace({ profile, onSignOut }) {
     if (!content || asking) return;
     const nextMessages = [...messages, { role: "user", content }];
     setMessages(nextMessages);
+    scrollToLatest();
     setQuestion("");
     setSubmitting(true);
     persistMessages(nextMessages).catch(() => undefined);
@@ -310,6 +319,7 @@ function MobileWorkspace({ profile, onSignOut }) {
       const task = await askMarketingData(content, messages);
       const pending = [...nextMessages, { role: "assistant", content: "正在分析当前权限范围内的数据…", meta: "后台任务已提交", jobId: task.jobId, status: task.status || "pending" }];
       setMessages(pending);
+      scrollToLatest();
       await persistMessages(pending);
       setActiveJobId(task.jobId);
     } catch (error) {
@@ -351,8 +361,9 @@ function MobileWorkspace({ profile, onSignOut }) {
     <main className="mobile-agent">
       <header className="mobile-agent__header">
         <div className="mobile-agent__brand"><span>KEENDATA</span><strong>销售 Agent</strong></div>
-        <button className="mobile-agent__profile" type="button" onClick={onSignOut} title="退出登录" aria-label="退出登录"><span>{(profile.display_name || "管").slice(0, 1)}</span><MoreOutlined /></button>
+        <button className="mobile-agent__profile" type="button" onClick={() => setAccountMenuOpen((current) => !current)} title="账号菜单" aria-expanded={accountMenuOpen} aria-label="打开账号菜单"><span>{(profile.display_name || "管").slice(0, 1)}</span><MoreOutlined /></button>
       </header>
+      {accountMenuOpen && <div className="mobile-account-backdrop" role="presentation" onClick={() => setAccountMenuOpen(false)}><section className="mobile-account-menu" role="dialog" aria-label="账号菜单" onClick={(event) => event.stopPropagation()}><div className="mobile-account-menu__identity"><span>{(profile.display_name || "管").slice(0, 1)}</span><div><strong>{profile.display_name || "当前账号"}</strong><small>{profile.role === "admin" ? "管理员 · 全部可见数据" : profile.role === "presales" ? "售前 · 全部可见数据" : "销售 · 本人数据"}</small></div></div><button type="button" onClick={() => { setAccountMenuOpen(false); onSignOut(); }}><LogoutOutlined /> 退出登录</button></section></div>}
       <nav className="mobile-tabs" aria-label="主导航"><button type="button" className={activeTab === "chat" ? "is-active" : ""} onClick={() => setActiveTab("chat")}><RobotOutlined /> 对话</button><button type="button" className={activeTab === "reports" ? "is-active" : ""} onClick={() => setActiveTab("reports")}><FileTextOutlined /> 报告</button></nav>
       {notice && <div className="mobile-notice"><span>{notice}</span><button type="button" onClick={() => setNotice("")}><CloseOutlined /></button></div>}
 
@@ -365,9 +376,11 @@ function MobileWorkspace({ profile, onSignOut }) {
           <div ref={messageEndRef} />
         </div>
         <form className="mobile-composer" onSubmit={(event) => { event.preventDefault(); submitQuestion(); }}>
-          <textarea value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submitQuestion(); } }} placeholder="输入问题，或使用语音输入" rows="1" />
-          <VoiceButton disabled={asking} onText={setQuestion} />
-          <button type="submit" className="mobile-send" disabled={asking || !question.trim()} aria-label="发送"><SendOutlined /></button>
+          <div className="mobile-composer__surface">
+            <textarea value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submitQuestion(); } }} placeholder="输入问题，或使用语音输入" rows="1" />
+            {!question.trim() && <VoiceButton disabled={asking} onText={setQuestion} />}
+            {question.trim() && <button type="submit" className="mobile-send" disabled={asking} aria-label="发送"><SendOutlined /></button>}
+          </div>
           <small>销售数据受企业权限保护</small>
         </form>
       </section> : <section className="mobile-reports">
