@@ -27,6 +27,7 @@ function mapProject(row) {
     adcode: row.adcode,
     coordinates: [Number(row.longitude), Number(row.latitude)],
     amount: Number(row.amount),
+    contractSignedAmount: row.contract_signed_amount == null ? null : Number(row.contract_signed_amount),
     stage: row.stage,
     owner: row.owner_name,
     ownerId: row.owner_id,
@@ -143,6 +144,7 @@ function toProjectPayload(form, customerId, ownerId, presalesId, currentUserId) 
     longitude: Number(coordinates[0]),
     latitude: Number(coordinates[1]),
     amount: Number(form.amount),
+    contract_signed_amount: form.contractSignedAmount === "" || form.contractSignedAmount == null ? null : Number(form.contractSignedAmount),
     stage: form.stage,
     probability: { lead: 5, discovery: 20, solution: 50, negotiation: 80, contract: 90, won: 100, lost: 0 }[form.stage] ?? 5,
     owner_id: ownerId,
@@ -589,6 +591,13 @@ export async function importBackendProjects(rows, { fileName, currentUserId }) {
       completed_at: new Date().toISOString(),
     }).eq("id", job.id);
     throw error;
+  }
+  const contractUpdates = (importedRows ?? []).map((row, index) => ({ id: row.project_id, amount: rows[index]?.contractSignedAmount }))
+    .filter((item) => item.id && item.amount != null && Number.isFinite(item.amount));
+  if (contractUpdates.length) {
+    const results = await Promise.all(contractUpdates.map((item) => supabase.from("projects").update({ contract_signed_amount: item.amount }).eq("id", item.id)));
+    const failed = results.find((result) => result.error);
+    if (failed?.error) throw failed.error;
   }
 
   const successRows = importedRows?.length ?? rows.length;

@@ -43,7 +43,7 @@ export function parseImportCsv(content) {
     const data = {
       name: source["项目名称"], account: source["客户主体"], contactName: source["关键联系人"] || "", contactMobile: source["联系人手机号"] || "", contactEmail: source["联系人邮箱"] || "", category: categoryMap[source["项目类型"]] ?? source["项目类型"],
       region: inferredRegion ?? source["经营区域"], province: source["省份"], city: source["城市"], district: source["区县"], adcode: source["行政区划代码"],
-      coordinates: [Number(source["经度"]), Number(source["纬度"])], amount: Number(source["金额（万元）"] || 0), owner: source["负责人"], presales: source["售前负责人"] || "",
+      coordinates: [Number(source["经度"]), Number(source["纬度"])], amount: Number(source["商机金额（万元）"] || source["金额（万元）"] || 0), contractSignedAmount: source["合同签订金额（万元）"]?.trim() ? Number(source["合同签订金额（万元）"]) : null, owner: source["负责人"], presales: source["售前负责人"] || "",
       stage: stageMap[source["销售阶段"]] ?? source["销售阶段"], health: (healthMap[source["健康度"]] ?? source["健康度"]) || "green", priority: source["优先级"] || "P2",
       nextAction: source["下一步动作"] || "", nextActionDate: source["计划日期"] || "", expectedClose: source["预计成交日期"] || "",
       source: source["数据来源"] || "批量导入", risk: source["风险说明"] || "未填写",
@@ -62,6 +62,7 @@ export function parseImportCsv(content) {
     if (!BUSINESS_REGIONS.includes(data.region)) missing.push("经营区域取值");
     if (!STAGES.some((stage) => stage.key === data.stage)) missing.push("销售阶段取值");
     if (!HEALTH_KEYS.has(data.health)) missing.push("健康度取值");
+    if (source["合同签订金额（万元）"]?.trim() && (!Number.isFinite(data.contractSignedAmount) || data.contractSignedAmount < 0)) missing.push("合同签订金额取值");
     if (!data.isDirectContract && !data.integrator) missing.push("非直签项目需填写集成商");
     if (data.category === "government" && !data.referralUnit) missing.push("政府资源项目需填写牵线单位");
     return { row: index + 2, data, status: missing.length ? "需修正" : "通过", error: [...new Set(missing)].join("、") };

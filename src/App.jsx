@@ -1010,6 +1010,65 @@ function AICognitiveActionPage({ projects, alerts, roleKey, currentUserName, onA
   );
 }
 
+function buildDataGaps(projects) {
+  return projects.flatMap((project) => {
+    const gaps = [];
+    if (!Number(project.amount)) gaps.push({ key: "amount", label: "商机金额", detail: "商机金额未填写，无法判断项目整体规模。" });
+    if (!project.nextAction?.trim() || !project.nextActionDate) gaps.push({ key: "nextAction", label: "下一步动作", detail: "缺少动作或计划日期，无法形成可执行的跟进节奏。" });
+    if (["contract", "won"].includes(project.stage) && project.contractSignedAmount == null) gaps.push({ key: "contractSignedAmount", label: "合同签订金额", detail: "项目已进入签约/赢单阶段，但科杰合同签订金额尚未补录。" });
+    if (["solution", "negotiation", "contract", "won"].includes(project.stage) && !project.decisionChainDescription?.trim()) gaps.push({ key: "decisionChain", label: "决策链", detail: "中后期项目缺少决策链信息，难以判断推进风险。" });
+    return gaps.map((gap) => ({ id: `gap-${project.id}-${gap.key}`, project, ...gap }));
+  });
+}
+
+function AICognitiveActionPageV2({ projects, alerts, users, roleKey, currentUserName, currentUserId, onAsk, onLoadJob, onApply, onViewProject, onEditProject, onToast }) {
+  const [tab, setTab] = useState("data");
+  const [scope, setScope] = useState("global");
+  const [ownerId, setOwnerId] = useState("");
+  const [analysis, setAnalysis] = useState("");
+  const [analysisStatus, setAnalysisStatus] = useState("idle");
+  const [applyingId, setApplyingId] = useState(null);
+  const salesUsers = users.filter((user) => user.roleKey === "sales");
+  const scopedProjects = useMemo(() => roleKey === "admin" && scope === "sales" && ownerId ? projects.filter((project) => project.ownerId === ownerId) : projects, [projects, roleKey, scope, ownerId]);
+  const scopedAlerts = useMemo(() => roleKey === "admin" && scope === "sales" && ownerId ? alerts.filter((alert) => alert.ownerId === ownerId) : alerts, [alerts, roleKey, scope, ownerId]);
+  const actions = useMemo(() => buildCognitiveActions(scopedProjects, scopedAlerts), [scopedProjects, scopedAlerts]);
+  const dataGaps = useMemo(() => buildDataGaps(scopedProjects), [scopedProjects]);
+  const opportunityTotal = scopedProjects.reduce((sum, project) => sum + project.amount, 0);
+  const contractTotal = scopedProjects.reduce((sum, project) => sum + (project.contractSignedAmount ?? 0), 0);
+  const dueActionCount = scopedProjects.filter((project) => dateIsOverdue(project.nextActionDate)).length;
+  const gapCoverage = scopedProjects.length ? Math.round((1 - dataGaps.length / (scopedProjects.length * 4)) * 100) : 100;
+  const scopeLabel = roleKey === "admin" && scope === "sales" ? salesUsers.find((user) => user.id === ownerId)?.name ?? "指定销售" : roleKey === "admin" ? "全局" : "本人";
+
+  const runAnalysis = async () => {
+    setAnalysisStatus("processing");
+    setAnalysis("");
+    try {
+      const job = await onAsk(`请以${scopeLabel}数据视角，基于当前权限内的实时营销数据，输出一段不超过220字的行动分析。按“优先事项、数据依据、建议顺序”组织；只引用真实项目和提醒，不要建议直接修改金额、阶段或负责人。`);
+      const startedAt = Date.now();
+      const poll = async () => {
+        const result = await onLoadJob(job.jobId);
+        if (result.status === "completed") { setAnalysis(result.answer || "AI 未返回可展示的行动分析。"); setAnalysisStatus("completed"); return; }
+        if (result.status === "failed" || Date.now() - startedAt > 90000) { setAnalysis(result.error || "AI 分析暂时未完成，请稍后重试。"); setAnalysisStatus("failed"); return; }
+        window.setTimeout(() => poll().catch((error) => { setAnalysis(error.message || "AI 分析状态读取失败"); setAnalysisStatus("failed"); }), 2000);
+      };
+      window.setTimeout(() => poll().catch((error) => { setAnalysis(error.message || "AI 分析状态读取失败"); setAnalysisStatus("failed"); }), 1200);
+    } catch (error) { setAnalysis(error.message || "AI 分析启动失败"); setAnalysisStatus("failed"); }
+  };
+  const confirmAction = async (proposal) => {
+    setApplyingId(proposal.id);
+    try { await onApply(proposal); onToast(`已确认写回「${proposal.project.name}」的下一步动作`); } catch (error) { onToast(error.message || "AI 动作写回失败", "error"); } finally { setApplyingId(null); }
+  };
+
+  return <div className="standard-page ai-action-page ai-action-page--v2">
+    <PageHeader eyebrow="AI COGNITIVE ACTION" title="AI 认知行动" description={`面向${scopeLabel}视角；${currentUserName}仅可查看当前权限内的真实项目与提醒。`} actions={roleKey === "admin" ? <div className="ai-scope-switch"><button type="button" className={scope === "global" ? "is-active" : ""} onClick={() => setScope("global")}>全局分析</button><select value={scope === "sales" ? ownerId : ""} onChange={(event) => { setOwnerId(event.target.value); setScope("sales"); }}><option value="">切换到具体销售</option>{salesUsers.map((user) => <option value={user.id} key={user.id}>{user.name}</option>)}</select></div> : null} />
+    <div className="ai-action-summary"><article><img src="/battlemap/ai-assistant-avatar.png" alt="AI 行动助手" /><div><small>分析范围</small><strong>{scopeLabel}数据</strong><p>按真实权限隔离，不使用模拟数据</p></div></article><article><span className="ai-action-summary__danger"><WarningFilled /></span><div><small>待补全数据</small><strong>{dataGaps.length} 项</strong><p>含金额、决策链和下一步动作</p></div></article><article><span className="ai-action-summary__warning"><CalendarOutlined /></span><div><small>待我确认</small><strong>{actions.length} 项</strong><p>确认后才写回真实项目</p></div></article></div>
+    <div className="ai-action-tabs"><button className={tab === "data" ? "is-active" : ""} type="button" onClick={() => setTab("data")}>数据分析 <b>{scopedProjects.length}</b></button><button className={tab === "action" ? "is-active" : ""} type="button" onClick={() => setTab("action")}>行动分析 <b>{dueActionCount + scopedAlerts.filter((item) => item.status === "待处理").length}</b></button><button className={tab === "confirm" ? "is-active" : ""} type="button" onClick={() => setTab("confirm")}>待我确认 <b>{actions.length}</b></button></div>
+    {tab === "data" && <><div className="analysis-kpis ai-data-kpis"><Metric label="可见项目" value={scopedProjects.length} /><Metric label="商机总额（万元）" value={formatMoney(opportunityTotal)} /><Metric label="合同签订金额（万元）" value={formatMoney(contractTotal)} /><Metric label="数据完整度" value={gapCoverage} suffix="%" inverse={gapCoverage < 80} /></div><section className="ai-action-insight"><header><div><p>DATA COMPLETENESS</p><h2>缺失数据提醒</h2></div><span>{dataGaps.length} 项待补全</span></header>{dataGaps.length ? <div className="ai-gap-list">{dataGaps.slice(0, 8).map((gap) => <article key={gap.id}><i><WarningFilled /></i><div><strong>{gap.project.name} · 缺少{gap.label}</strong><p>{gap.detail}</p></div><GhostButton onClick={() => onEditProject(gap.project)}>去补全</GhostButton></article>)}</div> : <div className="ai-action-empty"><CheckCircleFilled /><strong>关键经营字段已完整</strong></div>}</section></>}
+    {tab === "action" && <><div className="analysis-kpis ai-data-kpis"><Metric label="待处理提醒" value={scopedAlerts.filter((item) => item.status === "待处理").length} inverse /><Metric label="动作逾期或缺失" value={dueActionCount} inverse /><Metric label="高风险项目" value={scopedProjects.filter((project) => project.health === "red").length} inverse /><Metric label="可确认动作" value={actions.length} /></div><section className="ai-action-insight"><header><div><p>ROLE-BASED ACTION ANALYSIS</p><h2>AI 行动分析</h2></div><PrimaryButton onClick={runAnalysis} disabled={analysisStatus === "processing"}><RobotOutlined /> {analysisStatus === "processing" ? "AI 正在分析" : "生成角色分析"}</PrimaryButton></header>{analysis ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{analysis}</ReactMarkdown> : <p>AI 将在当前范围的真实项目、提醒和日报基础上生成行动优先级；金额、阶段和负责人仍须由人工确认后在项目中修改。</p>}</section></>}
+    {tab === "confirm" && <div className="ai-action-layout ai-action-layout--single"><section className="ai-action-panel ai-action-panel--detail"><header><div><p>TO CONFIRM</p><h2>待我确认的行动</h2></div><span>{actions.length}</span></header>{actions.length ? <div className="ai-confirm-list">{actions.map((proposal) => <article key={proposal.id}><i className={`ai-action-level ai-action-level--${proposal.level}`} /><div><strong>{proposal.project.name}</strong><small>{proposal.title}</small><p><b>依据：</b>{proposal.evidence}</p><em>建议：{proposal.nextAction} · {proposal.nextActionDate}</em></div><div><GhostButton onClick={() => onViewProject(proposal.project)}>详情</GhostButton><PrimaryButton onClick={() => confirmAction(proposal)} disabled={applyingId === proposal.id}>{applyingId === proposal.id ? "写回中" : "确认执行"}</PrimaryButton></div></article>)}</div> : <div className="ai-action-empty"><CheckCircleFilled /><strong>当前没有待确认动作</strong><p>系统会随着真实项目与提醒数据变化重新计算。</p></div>}</section></div>}
+  </div>;
+}
+
 function ProjectForm({ initialProject, onSubmit, onCancel, users = [], saving = false, roleKey, currentUserId }) {
   const salesUsers = users.filter((user) => user.roleKey === "sales" || user.role === "销售" || user.role === "销售经理");
   const scopedSalesUsers = roleKey === "sales" ? salesUsers.filter((user) => user.id === currentUserId) : salesUsers;
@@ -1027,6 +1086,7 @@ function ProjectForm({ initialProject, onSubmit, onCancel, users = [], saving = 
     requirementDescription: initialProject.requirementDescription ?? "",
     decisionChainDescription: initialProject.decisionChainDescription ?? "",
     competitorDescription: initialProject.competitorDescription ?? "",
+    contractSignedAmount: initialProject.contractSignedAmount ?? "",
   } : {
     name: "",
     account: "",
@@ -1041,6 +1101,7 @@ function ProjectForm({ initialProject, onSubmit, onCancel, users = [], saving = 
     adcode: "",
     coordinates: ["", ""],
     amount: 0,
+    contractSignedAmount: "",
     stage: "lead",
     owner: defaultOwner,
     presales: defaultPresales,
@@ -1103,6 +1164,7 @@ function ProjectForm({ initialProject, onSubmit, onCancel, users = [], saving = 
         <label>区县<div className="field-with-action"><input required value={form.district} onChange={(event) => updateLocationField("district", event.target.value)} /><button type="button" onClick={locateByArea} disabled={locating}>{locating ? "定位中" : "自动定位"}</button></div>{locationMessage && <small className="field-message">{locationMessage}</small>}</label>
         <label>行政区划代码<input required readOnly inputMode="numeric" pattern="[0-9]{6}" value={form.adcode} placeholder="自动生成" /></label>
         <label>商机金额（万元）<input type="number" min="0" value={form.amount} onChange={(event) => update("amount", Number(event.target.value))} /></label>
+        <label>合同签订金额（万元）<input type="number" min="0" value={form.contractSignedAmount} onChange={(event) => update("contractSignedAmount", event.target.value === "" ? "" : Number(event.target.value))} placeholder="尚未签订可留空" /></label>
         <label>经度<input required type="number" step="0.000001" min="73" max="136" value={form.coordinates[0]} onChange={(event) => update("coordinates", [Number(event.target.value), form.coordinates[1]])} /></label>
         <label>纬度<input required type="number" step="0.000001" min="3" max="54" value={form.coordinates[1]} onChange={(event) => update("coordinates", [form.coordinates[0], Number(event.target.value)])} /></label>
         <label>负责人<select required value={form.owner} onChange={(event) => update("owner", event.target.value)}>{ownerUsers.map((user) => <option key={user.id}>{user.name}</option>)}</select></label>
@@ -1249,6 +1311,7 @@ function DetailModal({ project, onClose, onEdit, users }) {
         </section>
         <section className="detail-kpis">
           <div><span>商机金额</span><strong>{formatMoney(project.amount)} 万元</strong></div>
+          <div><span>合同签订金额</span><strong>{project.contractSignedAmount == null ? "未补录" : `${formatMoney(project.contractSignedAmount)} 万元`}</strong></div>
           <div><span>加权金额</span><strong>{formatMoney(project.amount * stage.probability / 100)} 万元</strong></div>
           <div><span>当前阶段</span><strong>{stage.label} · {stage.probability}%</strong></div>
           <div><span>负责人 / 售前</span><strong>{project.owner} / {project.presales}</strong></div>
@@ -2177,7 +2240,7 @@ function ManagementPage({ projects, operations, users, roleKey, onCreate, onImpo
     const keys = new Set([...Object.keys(log.oldData ?? {}), ...Object.keys(log.newData ?? {})]);
     return [...keys].filter((key) => JSON.stringify(log.oldData?.[key]) !== JSON.stringify(log.newData?.[key])).join("、") || "无字段差异";
   };
-  const templateHeaders = [{ key: "name", label: "项目名称" }, { key: "account", label: "客户主体" }, { key: "contactName", label: "关键联系人" }, { key: "contactMobile", label: "联系人手机号" }, { key: "contactEmail", label: "联系人邮箱" }, { key: "category", label: "项目类型" }, { key: "referralUnit", label: "牵线单位" }, { key: "region", label: "经营区域" }, { key: "province", label: "省份" }, { key: "city", label: "城市" }, { key: "district", label: "区县" }, { key: "adcode", label: "行政区划代码" }, { key: "longitude", label: "经度" }, { key: "latitude", label: "纬度" }, { key: "amount", label: "金额（万元）" }, { key: "owner", label: "负责人" }, { key: "presales", label: "售前负责人" }, { key: "stage", label: "销售阶段" }, { key: "health", label: "健康度" }, { key: "priority", label: "优先级" }, { key: "requirementDescription", label: "项目需求描述" }, { key: "decisionChainDescription", label: "决策链描述" }, { key: "competitorDescription", label: "竞争对手描述" }, { key: "是否直签", label: "是否直签" }, { key: "集成商", label: "集成商" }, { key: "交付伙伴", label: "交付伙伴" }, { key: "nextAction", label: "下一步动作" }, { key: "nextActionDate", label: "计划日期" }, { key: "expectedClose", label: "预计成交日期" }, { key: "source", label: "数据来源" }, { key: "risk", label: "风险说明" }];
+  const templateHeaders = [{ key: "name", label: "项目名称" }, { key: "account", label: "客户主体" }, { key: "contactName", label: "关键联系人" }, { key: "contactMobile", label: "联系人手机号" }, { key: "contactEmail", label: "联系人邮箱" }, { key: "category", label: "项目类型" }, { key: "referralUnit", label: "牵线单位" }, { key: "region", label: "经营区域" }, { key: "province", label: "省份" }, { key: "city", label: "城市" }, { key: "district", label: "区县" }, { key: "adcode", label: "行政区划代码" }, { key: "longitude", label: "经度" }, { key: "latitude", label: "纬度" }, { key: "amount", label: "商机金额（万元）" }, { key: "contractSignedAmount", label: "合同签订金额（万元）" }, { key: "owner", label: "负责人" }, { key: "presales", label: "售前负责人" }, { key: "stage", label: "销售阶段" }, { key: "health", label: "健康度" }, { key: "priority", label: "优先级" }, { key: "requirementDescription", label: "项目需求描述" }, { key: "decisionChainDescription", label: "决策链描述" }, { key: "competitorDescription", label: "竞争对手描述" }, { key: "是否直签", label: "是否直签" }, { key: "集成商", label: "集成商" }, { key: "交付伙伴", label: "交付伙伴" }, { key: "nextAction", label: "下一步动作" }, { key: "nextActionDate", label: "计划日期" }, { key: "expectedClose", label: "预计成交日期" }, { key: "source", label: "数据来源" }, { key: "risk", label: "风险说明" }];
   const downloadTemplate = () => exportCsv("营销作战地图_导入模板.csv", [], templateHeaders);
   const exportAuditLogs = () => exportCsv("营销作战地图_审计日志.csv", operations.auditLogs.map((log) => ({
     time: formatDateTime(log.createdAt), table: log.table, record: log.recordId, action: log.action,
@@ -2522,7 +2585,7 @@ export function App() {
 
   const page = (() => {
     switch (activePage) {
-      case "aiActions": return <AICognitiveActionPage projects={visibleProjects} alerts={alerts} roleKey={roleKey} currentUserName={currentUser.display_name} onAsk={askMarketingData} onLoadJob={loadMarketingDataJob} onApply={applyAIProposal} onViewProject={setDetailProject} onToast={notify} />;
+      case "aiActions": return <AICognitiveActionPageV2 projects={visibleProjects} alerts={alerts} users={directoryUsers} roleKey={roleKey} currentUserName={currentUser.display_name} currentUserId={auth.session.user.id} onAsk={askMarketingData} onLoadJob={loadMarketingDataJob} onApply={applyAIProposal} onViewProject={setDetailProject} onEditProject={openEdit} onToast={notify} />;
       case "map": return <MapPage projects={visibleProjects} alerts={alerts} roleKey={roleKey} currentUserName={currentUser.display_name} selectedProjectId={selectedProjectId} onSelectProject={setSelectedProjectId} onGoToProject={setDetailProject} onOpenAlerts={() => setActivePage("alerts")} onRefresh={refreshBackendData} />;
       case "workbench": return <WorkbenchPage projects={visibleProjects} weeklyUpdates={operations.weeklyUpdates} dailyReportImports={operations.dailyReportImports} dailyReportEntries={operations.dailyReportEntries} users={directoryUsers} roleKey={roleKey} currentUserId={auth.session.user.id} currentUserName={currentUser.display_name} onSaveWeekly={saveSalesWeek} onAnalyzeDailyReport={analyzeSalesDailyReport} onLoadDailyReportJob={loadDailyReportAnalysisJob} onImportDailyReport={saveSalesDailyReport} onLoadDailyDraft={loadDailyReportDraft} onSaveDailyDraft={saveDailyReportDraft} onClearDailyDraft={clearDailyReportDraft} onCreate={openCreate} onView={setDetailProject} onEdit={openEdit} onDelete={setDeleteTarget} onBulkDelete={setBulkDeleteIds} />;
       case "analysis": return <AnalysisPage projects={visibleProjects} roleKey={roleKey} reports={operations.salesReports} onAsk={askMarketingData} onLoadJob={loadMarketingDataJob} onLoadHistory={loadMarketingHistory} onSaveHistory={saveMarketingHistory} onClearHistory={clearMarketingHistory} onCreateReport={createSalesReport} onLoadReport={loadSalesReport} onRefreshReports={refreshBackendData} />;
