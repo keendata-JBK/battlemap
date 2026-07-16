@@ -476,94 +476,107 @@ async function handleMessage(
   }
   if (logError) throw logError;
 
-  const binding = await loadOrCreateBinding(
-    adminClient,
-    staffId,
-    senderNick,
-    robotCode,
-  );
-  if (binding.status !== "active" || !binding.profile_id) {
-    const answer = [
-      `你好，${
-        senderNick || "同事"
-      }。机器人已经识别到你的钉钉身份，但尚未与销售系统账号绑定。`,
-      "请让管理员进入“系统管理 → 钉钉身份”，选择你的销售系统账号并确认绑定。",
-      `识别码：${staffId}`,
-      "绑定完成后直接再发一次问题即可；在此之前不会读取任何销售数据。",
-    ].join("\n");
+  try {
+    const binding = await loadOrCreateBinding(
+      adminClient,
+      staffId,
+      senderNick,
+      robotCode,
+    );
+    if (binding.status !== "active" || !binding.profile_id) {
+      const answer = [
+        `你好，${
+          senderNick || "同事"
+        }。机器人已经识别到你的钉钉身份，但尚未与销售系统账号绑定。`,
+        "请让管理员进入“系统管理 → 钉钉身份”，选择你的销售系统账号并确认绑定。",
+        `识别码：${staffId}`,
+        "绑定完成后直接再发一次问题即可；在此之前不会读取任何销售数据。",
+      ].join("\n");
+      await adminClient.from("dingtalk_message_log").update({
+        status: "completed",
+        completed_at: new Date().toISOString(),
+      }).eq("message_key", messageId);
+      await adminClient.from("dingtalk_message_log").insert({
+        message_key: `${messageId}:reply`,
+        staff_id: staffId,
+        conversation_id: conversationId,
+        direction: "outbound",
+        content: answer,
+        status: "sent",
+        completed_at: new Date().toISOString(),
+      });
+      return jsonResponse({
+        answer,
+        code: "binding_required",
+        bindingStatus: binding.status,
+      });
+    }
+
+    const { data: profile, error: profileError } = await adminClient
+      .from("profiles")
+      .select("id,display_name,role,active")
+      .eq("id", binding.profile_id)
+      .single();
+    if (profileError || !profile?.active) {
+      const answer =
+        "你的销售系统账号不存在或已停用，请联系管理员检查账号状态。";
+      await adminClient.from("dingtalk_message_log").update({
+        status: "failed",
+        error_message: answer,
+        completed_at: new Date().toISOString(),
+      }).eq("message_key", messageId);
+      return jsonResponse({ answer, code: "profile_inactive" }, 403);
+    }
+
+    const { data: conversation } = await adminClient
+      .from("dingtalk_conversations")
+      .select("history")
+      .eq("conversation_id", conversationId)
+      .eq("staff_id", staffId)
+      .maybeSingle();
+    const history = array(conversation?.history) as Array<
+      Record<string, unknown>
+    >;
+    const context = await loadScopedContext(adminClient, profile);
+    const answer = await askSalesAgent(question, profile, context, history);
+    await saveConversation(adminClient, conversationId, staffId, [
+      ...history,
+      { role: "user", content: question, at: new Date().toISOString() },
+      { role: "assistant", content: answer, at: new Date().toISOString() },
+    ]);
+    const finishedAt = new Date().toISOString();
     await adminClient.from("dingtalk_message_log").update({
+      profile_id: profile.id,
       status: "completed",
-      completed_at: new Date().toISOString(),
+      completed_at: finishedAt,
     }).eq("message_key", messageId);
     await adminClient.from("dingtalk_message_log").insert({
       message_key: `${messageId}:reply`,
       staff_id: staffId,
       conversation_id: conversationId,
+      profile_id: profile.id,
       direction: "outbound",
       content: answer,
       status: "sent",
-      completed_at: new Date().toISOString(),
+      completed_at: finishedAt,
     });
     return jsonResponse({
       answer,
-      code: "binding_required",
-      bindingStatus: binding.status,
+      code: "ok",
+      dataScope: context.dataScope,
+      profile: { displayName: profile.display_name, role: profile.role },
     });
-  }
-
-  const { data: profile, error: profileError } = await adminClient
-    .from("profiles")
-    .select("id,display_name,role,active")
-    .eq("id", binding.profile_id)
-    .single();
-  if (profileError || !profile?.active) {
-    const answer = "你的销售系统账号不存在或已停用，请联系管理员检查账号状态。";
+  } catch (error) {
     await adminClient.from("dingtalk_message_log").update({
       status: "failed",
-      error_message: answer,
+      error_message: safeText(
+        error instanceof Error ? error.message : "钉钉销售 Agent 处理失败",
+        1000,
+      ),
       completed_at: new Date().toISOString(),
     }).eq("message_key", messageId);
-    return jsonResponse({ answer, code: "profile_inactive" }, 403);
+    throw error;
   }
-
-  const { data: conversation } = await adminClient
-    .from("dingtalk_conversations")
-    .select("history")
-    .eq("conversation_id", conversationId)
-    .eq("staff_id", staffId)
-    .maybeSingle();
-  const history = array(conversation?.history) as Array<
-    Record<string, unknown>
-  >;
-  const context = await loadScopedContext(adminClient, profile);
-  const answer = await askSalesAgent(question, profile, context, history);
-  await saveConversation(adminClient, conversationId, staffId, [
-    ...history,
-    { role: "user", content: question, at: new Date().toISOString() },
-    { role: "assistant", content: answer, at: new Date().toISOString() },
-  ]);
-  const finishedAt = new Date().toISOString();
-  await adminClient.from("dingtalk_message_log").update({
-    profile_id: profile.id,
-    status: "completed",
-    completed_at: finishedAt,
-  }).eq("message_key", messageId);
-  await adminClient.from("dingtalk_message_log").insert({
-    message_key: `${messageId}:reply`,
-    staff_id: staffId,
-    conversation_id: conversationId,
-    profile_id: profile.id,
-    direction: "outbound",
-    content: answer,
-    status: "sent",
-    completed_at: finishedAt,
-  });
-  return jsonResponse({
-    answer,
-    code: "ok",
-    dataScope: context.dataScope,
-    profile: { displayName: profile.display_name, role: profile.role },
-  });
 }
 
 function buildDigest(
