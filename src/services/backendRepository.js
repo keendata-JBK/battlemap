@@ -243,6 +243,7 @@ export async function loadBackendData() {
     { data: auditRows, error: auditError },
     { data: dailyEntryRows, error: dailyEntryError },
     { data: salesReportRows, error: salesReportError },
+    { data: dingtalkProposalRows, error: dingtalkProposalError },
   ] = await Promise.all([
     supabase.from("project_dashboard").select("*").order("updated_at", { ascending: false }),
     supabase.from("alerts").select("*").order("created_at", { ascending: false }),
@@ -255,6 +256,7 @@ export async function loadBackendData() {
     supabase.from("audit_logs").select("id,table_name,record_id,action,old_data,new_data,actor_id,created_at").order("created_at", { ascending: false }).limit(200),
     supabase.from("daily_report_entries").select("id,project_id,salesperson_id,report_date,activity_type,content,customer_contact,created_at").order("report_date", { ascending: false }).limit(2000),
     supabase.from("sales_reports").select("id,requester_id,report_type,period_start,period_end,title,status,content,markdown,error_message,model,data_scope,project_count,generated_automatically,created_at,updated_at,finished_at").order("period_end", { ascending: false }).limit(50),
+    supabase.from("dingtalk_write_proposals").select("id,profile_id,conversation_id,summary,payload,status,expires_at,created_at,updated_at,profile:profiles!dingtalk_write_proposals_profile_id_fkey(display_name)").eq("status", "pending").gt("expires_at", new Date().toISOString()).order("created_at", { ascending: false }).limit(100),
   ]);
   if (projectError) throw projectError;
   if (alertError) throw alertError;
@@ -267,6 +269,7 @@ export async function loadBackendData() {
   if (auditError) throw auditError;
   if (dailyEntryError) throw dailyEntryError;
   if (salesReportError) throw salesReportError;
+  if (dingtalkProposalError) throw dingtalkProposalError;
 
   const customerIdsWithValidContact = new Set(
     contactRows
@@ -297,6 +300,18 @@ export async function loadBackendData() {
       createdAt: row.created_at,
     })),
     salesReports: salesReportRows.map(mapSalesReport),
+    dingtalkWriteProposals: dingtalkProposalRows.map((row) => ({
+      id: row.id,
+      profileId: row.profile_id,
+      profileName: row.profile?.display_name || "未知用户",
+      conversationId: row.conversation_id,
+      summary: row.summary,
+      payload: row.payload || {},
+      status: row.status,
+      expiresAt: row.expires_at,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    })),
   };
 }
 

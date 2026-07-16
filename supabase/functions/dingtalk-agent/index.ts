@@ -1,4 +1,13 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.110.6";
+import {
+  buildAppliedReply,
+  buildProposalPreview,
+  buildProposalSummary,
+  isCancelCommand,
+  isConfirmCommand,
+  normalizeWriteProposal,
+  parseModelJson,
+} from "./write-proposal.mjs";
 
 const corsHeaders = {
   "Access-Control-Allow-Headers": "content-type, x-dingtalk-connector-token",
@@ -10,6 +19,7 @@ type AdminClient = ReturnType<typeof createClient<any>>;
 
 type ProjectRow = {
   id: string;
+  project_code: string;
   name: string;
   customer_name: string;
   amount: number | string | null;
@@ -168,6 +178,8 @@ function buildRuleBasedAnswer(
 
 function compactProject(project: ProjectRow) {
   return {
+    项目标识: project.id,
+    项目编号: project.project_code,
     项目: project.name,
     客户: project.customer_name,
     负责人: project.owner_name,
@@ -185,6 +197,7 @@ function compactProject(project: ProjectRow) {
     风险: project.risk,
     缺失字段: projectGapLabels(project),
     距上次更新天数: daysSince(project.updated_at),
+    数据更新时间: project.updated_at,
   };
 }
 
@@ -196,7 +209,7 @@ async function loadScopedContext(
   let projectQuery = adminClient
     .from("project_dashboard")
     .select(
-      "id,name,customer_name,amount,contract_signed_amount,stage,probability,owner_id,owner_name,health,priority,next_action,next_action_date,expected_close,risk,description,decision_chain_description,competitor_description,updated_at",
+      "id,project_code,name,customer_name,amount,contract_signed_amount,stage,probability,owner_id,owner_name,health,priority,next_action,next_action_date,expected_close,risk,description,decision_chain_description,competitor_description,updated_at",
     )
     .order("updated_at", { ascending: false })
     .limit(500);
@@ -227,27 +240,42 @@ async function loadScopedContext(
     )
     .order("week_start", { ascending: false })
     .limit(100);
+  let salesQuery = adminClient
+    .from("profiles")
+    .select("id,display_name,role")
+    .eq("active", true)
+    .eq("role", "sales")
+    .order("display_name");
   if (!canViewAll) {
     projectQuery = projectQuery.eq("owner_id", profile.id);
     alertQuery = alertQuery.eq("owner_id", profile.id);
     dailyQuery = dailyQuery.eq("salesperson_id", profile.id);
     weeklyQuery = weeklyQuery.eq("owner_id", profile.id);
+    salesQuery = salesQuery.eq("id", profile.id);
   }
-  const [projectResult, alertResult, dailyResult, weeklyResult] = await Promise
+  const [
+    projectResult,
+    alertResult,
+    dailyResult,
+    weeklyResult,
+    salesResult,
+  ] = await Promise
     .all([
       projectQuery,
       alertQuery,
       dailyQuery,
       weeklyQuery,
+      salesQuery,
     ]);
   const error = projectResult.error ?? alertResult.error ?? dailyResult.error ??
-    weeklyResult.error;
+    weeklyResult.error ?? salesResult.error;
   if (error) throw new Error(`实时销售数据读取失败：${error.message}`);
   return {
     projects: (projectResult.data ?? []) as ProjectRow[],
     alerts: (alertResult.data ?? []) as AlertRow[],
     dailyEntries: dailyResult.data ?? [],
     weeklyUpdates: weeklyResult.data ?? [],
+    salespeople: salesResult.data ?? [],
     dataScope: canViewAll ? "全部可见数据" : "仅本人负责的数据",
   };
 }
@@ -257,6 +285,7 @@ async function askSalesAgent(
   profile: { id: string; display_name: string; role: string },
   context: Awaited<ReturnType<typeof loadScopedContext>>,
   history: Array<Record<string, unknown>>,
+  pendingProposal: Record<string, unknown> | null,
 ) {
   const fallback = buildRuleBasedAnswer(
     profile.display_name,
@@ -265,7 +294,7 @@ async function askSalesAgent(
     context.alerts,
   );
   const gatewayKey = Deno.env.get("KEENROUTER_API_KEY");
-  if (!gatewayKey) return fallback;
+  if (!gatewayKey) return { answer: fallback, proposal: null };
   const gatewayBaseUrl = (Deno.env.get("KEENROUTER_BASE_URL") ??
     "http://router.keendata.net:5343/v1").replace(/\/$/, "");
   const activeProjects = context.projects.filter((project) =>
@@ -301,10 +330,13 @@ async function askSalesAgent(
   };
   const modelContext = {
     当前用户: {
+      账号标识: profile.id,
       姓名: profile.display_name,
       角色: profile.role,
       数据范围: context.dataScope,
     },
+    中国时区今天: chinaDate(),
+    销售目录: context.salespeople,
     指标: metrics,
     项目: context.projects.slice(0, 120).map(compactProject),
     待处理提醒: context.alerts.slice(0, 40).map((alert) => ({
@@ -315,6 +347,7 @@ async function askSalesAgent(
     })),
     近45天客户行动: context.dailyEntries.slice(0, 80),
     周更新: context.weeklyUpdates.slice(0, 30),
+    当前待确认更新: pendingProposal?.payload ?? null,
   };
   try {
     const response = await fetchWithTimeout(
@@ -329,7 +362,8 @@ async function askSalesAgent(
           model: "gpt-5.5",
           store: false,
           reasoning_effort: "low",
-          max_completion_tokens: 1400,
+          max_completion_tokens: 6000,
+          response_format: { type: "json_object" },
           messages: [
             {
               role: "system",
@@ -339,8 +373,20 @@ async function askSalesAgent(
                 "严格遵守数据范围：销售只能看本人数据；管理员和售前才可分析全局或具体销售。",
                 "回答要把“数据发现 → 判断 → 下一步行动”连起来，优先给出今天能执行、可核验的动作。",
                 "发现合同阶段/赢单项目缺合同签订金额，或缺下一步动作、行动日期、预计成交日期、决策链时，要明确提醒补齐。",
-                "不要声称已经修改数据；需要写回项目的动作必须先说明待用户确认。",
-                "适合钉钉阅读，控制在 600 字以内，可使用简短编号，不要输出表格。",
+                "如果用户只是在提问或分析，proposal 中两个数组都返回空数组。",
+                "如果用户明确陈述已经发生的项目事实、要求更新字段，或汇报当天工作，生成待确认 proposal；不得声称已经写入。",
+                "项目更新只能使用实时项目里的项目标识；只提取用户明确说出的事实，不得自行推断金额、阶段、日期、风险或合同金额。",
+                "每个独立拜访、会议、电话、方案交流、任务推进拆成一条 dailyReportEntries。",
+                "销售账号只能生成本人的日报，并且只能作用于本人项目。",
+                "管理员可按日期一次代录多名销售日报；必须根据销售目录匹配 salespersonId，根据项目名称、编号、客户和负责人匹配 projectId。",
+                "售前账号不能生成日报代录，但可以按权限分析和提出项目更新。",
+                "日期使用 YYYY-MM-DD；相对日期以实时数据中的中国时区今天为准。日报日期只能是今天或过去31天。",
+                "项目或销售无法唯一匹配时不得猜测：不要生成对应写入项，并在 clarification 中提出一个简短问题。",
+                "如果用户是在修改当前待确认更新，返回修改后的完整替代 proposal。",
+                "answer 适合钉钉阅读，控制在600字以内，不输出表格。",
+                "只返回 JSON，不要 Markdown 代码块。结构必须是：",
+                '{"answer":"分析回答或简短说明","proposal":{"projectUpdates":[{"projectId":"实时项目UUID","projectName":"项目名","changes":{"amount":1000,"contract_signed_amount":800,"stage":"solution","health":"yellow","priority":"P1","next_action":"提交方案","next_action_date":"YYYY-MM-DD","expected_close":"YYYY-MM-DD","risk":"明确事实","description":"明确事实","decision_chain_description":"明确事实","competitor_description":"明确事实"},"activityContent":"本次更新摘要"}],"dailyReportEntries":[{"salespersonId":"销售UUID","salespersonName":"销售姓名","projectId":"项目UUID","projectName":"项目名","reportDate":"YYYY-MM-DD","activityType":"call|meeting|visit|proposal|task|note","content":"事实描述","customerContact":"明确出现的客户联系人或空"}],"clarification":"无法可靠匹配时的问题或空"}}',
+                "changes 只保留用户明确要求且确实发生变化的字段；没有内容的数组返回 []。",
               ].join("\n"),
             },
             ...history.slice(-6).map((item) => ({
@@ -359,16 +405,26 @@ async function askSalesAgent(
       50000,
     );
     if (!response.ok) {
-      return `${fallback}\n\n（本次 AI 增强暂不可用，以上为实时数据规则分析。）`;
+      return {
+        answer:
+          `${fallback}\n\n（本次 AI 增强暂不可用，未生成任何待写入数据。）`,
+        proposal: null,
+      };
     }
     const payload = await response.json();
-    const answer = safeText(
+    const parsed = parseModelJson(
       payload?.choices?.[0]?.message?.content ?? payload?.output_text,
-      5000,
     );
-    return answer || fallback;
+    return {
+      answer: safeText(parsed?.answer, 5000) || fallback,
+      proposal: parsed?.proposal ?? null,
+    };
   } catch {
-    return `${fallback}\n\n（本次 AI 增强响应超时，以上为实时数据规则分析。）`;
+    return {
+      answer:
+        `${fallback}\n\n（本次 AI 增强响应超时，未生成任何待写入数据。）`,
+      proposal: null,
+    };
   }
 }
 
@@ -432,6 +488,109 @@ async function saveConversation(
   if (error) throw error;
 }
 
+async function loadPendingWriteProposal(
+  adminClient: AdminClient,
+  staffId: string,
+  conversationId: string,
+) {
+  const now = new Date().toISOString();
+  const { error: expiryError } = await adminClient
+    .from("dingtalk_write_proposals")
+    .update({ status: "expired", error_message: "超过24小时未确认" })
+    .eq("staff_id", staffId)
+    .eq("conversation_id", conversationId)
+    .eq("status", "pending")
+    .lte("expires_at", now);
+  if (expiryError) throw expiryError;
+  const { data, error } = await adminClient
+    .from("dingtalk_write_proposals")
+    .select("id,payload,summary,status,expires_at,created_at")
+    .eq("staff_id", staffId)
+    .eq("conversation_id", conversationId)
+    .eq("status", "pending")
+    .gt("expires_at", now)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function saveWriteProposal(
+  adminClient: AdminClient,
+  input: {
+    staffId: string;
+    profileId: string;
+    conversationId: string;
+    messageId: string;
+    originalText: string;
+    summary: string;
+    payload: Record<string, unknown>;
+  },
+) {
+  const { data, error } = await adminClient
+    .from("dingtalk_write_proposals")
+    .insert({
+      staff_id: input.staffId,
+      profile_id: input.profileId,
+      conversation_id: input.conversationId,
+      source_message_id: input.messageId,
+      original_text: input.originalText,
+      summary: input.summary,
+      payload: input.payload,
+      status: "pending",
+      model: "gpt-5.5",
+    })
+    .select("id,payload,summary,status,expires_at,created_at")
+    .single();
+  if (error) throw error;
+
+  const { error: supersedeError } = await adminClient
+    .from("dingtalk_write_proposals")
+    .update({ status: "superseded", error_message: "已由更新后的对话方案替代" })
+    .eq("staff_id", input.staffId)
+    .eq("conversation_id", input.conversationId)
+    .eq("status", "pending")
+    .neq("id", data.id);
+  if (supersedeError) throw supersedeError;
+  return data;
+}
+
+async function completeMessage(
+  adminClient: AdminClient,
+  input: {
+    messageId: string;
+    staffId: string;
+    conversationId: string;
+    profileId: string;
+    answer: string;
+  },
+) {
+  const finishedAt = new Date().toISOString();
+  const { error: updateError } = await adminClient
+    .from("dingtalk_message_log")
+    .update({
+      profile_id: input.profileId,
+      status: "completed",
+      completed_at: finishedAt,
+    })
+    .eq("message_key", input.messageId);
+  if (updateError) throw updateError;
+  const { error: replyError } = await adminClient
+    .from("dingtalk_message_log")
+    .insert({
+      message_key: `${input.messageId}:reply`,
+      staff_id: input.staffId,
+      conversation_id: input.conversationId,
+      profile_id: input.profileId,
+      direction: "outbound",
+      content: input.answer,
+      status: "sent",
+      completed_at: finishedAt,
+    });
+  if (replyError) throw replyError;
+}
+
 async function handleMessage(
   adminClient: AdminClient,
   body: Record<string, unknown>,
@@ -440,7 +599,7 @@ async function handleMessage(
   const senderNick = safeText(body.senderNick, 80);
   const robotCode = safeText(body.robotCode, 128);
   const messageId = safeText(body.messageId, 256);
-  const question = safeText(body.question, 2000);
+  const question = safeText(body.question, 12000);
   const conversationId = safeText(body.conversationId, 256) ||
     `direct:${staffId}`;
   if (!staffId || !messageId || !question) {
@@ -537,32 +696,139 @@ async function handleMessage(
     const history = array(conversation?.history) as Array<
       Record<string, unknown>
     >;
+    const pendingProposal = await loadPendingWriteProposal(
+      adminClient,
+      staffId,
+      conversationId,
+    );
+
+    if (isConfirmCommand(question)) {
+      let answer = "当前没有等待确认的更新。请先告诉我项目进展或要导入的日报。";
+      let writeResult: Record<string, unknown> | null = null;
+      if (pendingProposal) {
+        const { data, error } = await adminClient.rpc(
+          "apply_dingtalk_write_proposal",
+          {
+            proposal_uuid: pendingProposal.id,
+            caller_staff_id: staffId,
+            confirmation_message: messageId,
+          },
+        );
+        if (error) throw error;
+        writeResult = data as Record<string, unknown>;
+        answer = buildAppliedReply(writeResult);
+      }
+      await saveConversation(adminClient, conversationId, staffId, [
+        ...history,
+        { role: "user", content: question, at: new Date().toISOString() },
+        { role: "assistant", content: answer, at: new Date().toISOString() },
+      ]);
+      await completeMessage(adminClient, {
+        messageId,
+        staffId,
+        conversationId,
+        profileId: profile.id,
+        answer,
+      });
+      return jsonResponse({
+        answer,
+        code: writeResult?.status === "confirmed"
+          ? "write_confirmed"
+          : "no_pending_write",
+        writeResult,
+      });
+    }
+
+    if (isCancelCommand(question)) {
+      const answer = pendingProposal
+        ? "已取消这次待确认更新，项目和日报均未发生变化。"
+        : "当前没有等待确认的更新。";
+      if (pendingProposal) {
+        const { error } = await adminClient
+          .from("dingtalk_write_proposals")
+          .update({ status: "cancelled", error_message: "用户通过钉钉取消" })
+          .eq("id", pendingProposal.id)
+          .eq("status", "pending");
+        if (error) throw error;
+      }
+      await saveConversation(adminClient, conversationId, staffId, [
+        ...history,
+        { role: "user", content: question, at: new Date().toISOString() },
+        { role: "assistant", content: answer, at: new Date().toISOString() },
+      ]);
+      await completeMessage(adminClient, {
+        messageId,
+        staffId,
+        conversationId,
+        profileId: profile.id,
+        answer,
+      });
+      return jsonResponse({ answer, code: "write_cancelled" });
+    }
+
     const context = await loadScopedContext(adminClient, profile);
-    const answer = await askSalesAgent(question, profile, context, history);
+    const agentResult = await askSalesAgent(
+      question,
+      profile,
+      context,
+      history,
+      pendingProposal,
+    );
+    const normalized = normalizeWriteProposal(agentResult.proposal, {
+      profile,
+      projects: context.projects,
+      salespeople: context.salespeople,
+      today: chinaDate(),
+    });
+    let answer = agentResult.answer;
+    let proposalId: string | null = null;
+    if (normalized.proposal) {
+      const summary = buildProposalSummary(
+        normalized.proposal,
+        normalized.warnings,
+      );
+      const savedProposal = await saveWriteProposal(adminClient, {
+        staffId,
+        profileId: profile.id,
+        conversationId,
+        messageId,
+        originalText: question,
+        summary,
+        payload: normalized.proposal,
+      });
+      proposalId = savedProposal.id;
+      answer = buildProposalPreview(
+        normalized.proposal,
+        normalized.warnings,
+      );
+      if (normalized.clarification) {
+        answer = `${answer}\n\n还需要你补充：${normalized.clarification}`;
+      }
+    } else {
+      const notices = [
+        ...normalized.warnings,
+        normalized.clarification,
+      ].filter(Boolean);
+      if (notices.length) {
+        answer = `${answer}\n\n需要补充：${notices.slice(0, 5).join("；")}`;
+      }
+    }
     await saveConversation(adminClient, conversationId, staffId, [
       ...history,
       { role: "user", content: question, at: new Date().toISOString() },
       { role: "assistant", content: answer, at: new Date().toISOString() },
     ]);
-    const finishedAt = new Date().toISOString();
-    await adminClient.from("dingtalk_message_log").update({
-      profile_id: profile.id,
-      status: "completed",
-      completed_at: finishedAt,
-    }).eq("message_key", messageId);
-    await adminClient.from("dingtalk_message_log").insert({
-      message_key: `${messageId}:reply`,
-      staff_id: staffId,
-      conversation_id: conversationId,
-      profile_id: profile.id,
-      direction: "outbound",
-      content: answer,
-      status: "sent",
-      completed_at: finishedAt,
+    await completeMessage(adminClient, {
+      messageId,
+      staffId,
+      conversationId,
+      profileId: profile.id,
+      answer,
     });
     return jsonResponse({
       answer,
-      code: "ok",
+      code: proposalId ? "write_confirmation_required" : "ok",
+      proposalId,
       dataScope: context.dataScope,
       profile: { displayName: profile.display_name, role: profile.role },
     });
