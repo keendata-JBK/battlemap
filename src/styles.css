@@ -2728,6 +2728,62 @@ button:disabled {
   font-size: 10px;
 }
 
+.link-button--danger {
+  color: #d4380d;
+}
+
+.dingtalk-binding-intro {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid #cfe0f5;
+  border-radius: 7px;
+  background: #f5f9ff;
+  color: #53647c;
+}
+
+.dingtalk-binding-intro > span {
+  margin-top: 2px;
+  color: #1677ff;
+}
+
+.dingtalk-binding-intro p {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.7;
+}
+
+.dingtalk-binding-table code {
+  display: inline-block;
+  max-width: 180px;
+  overflow: hidden;
+  color: #3c4b62;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.dingtalk-binding-table select {
+  width: 190px;
+  min-height: 34px;
+  padding: 0 8px;
+  border: 1px solid #d8e1eb;
+  border-radius: 5px;
+  background: #fff;
+  color: #3f4d63;
+  font-size: 10px;
+}
+
+.dingtalk-binding-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  white-space: nowrap;
+}
+
 .permission-table {
   width: 100%;
   border-collapse: collapse;

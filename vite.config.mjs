@@ -13,6 +13,9 @@ export default defineConfig({
     },
   },
   plugins: [react()],
+  test: {
+    exclude: ["services/dingtalk-connector/**", "node_modules/**", "docs/**"],
+  },
   build: {
     outDir: "docs",
     emptyOutDir: true,

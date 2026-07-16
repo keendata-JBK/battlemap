@@ -660,6 +660,61 @@ export async function loadDirectory() {
   }));
 }
 
+export async function loadDingTalkBindings() {
+  const { data, error } = await supabase
+    .from("dingtalk_user_bindings")
+    .select("id,staff_id,sender_nick,profile_id,status,last_seen_at,bound_at,profile:profiles!dingtalk_user_bindings_profile_id_fkey(id,display_name,role,active)")
+    .order("last_seen_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((binding) => ({
+    id: binding.id,
+    staffId: binding.staff_id,
+    senderNick: binding.sender_nick || "未命名钉钉用户",
+    profileId: binding.profile_id || "",
+    profileName: binding.profile?.display_name || "",
+    profileRole: binding.profile?.role || "",
+    profileActive: binding.profile?.active !== false,
+    status: binding.status,
+    lastSeenAt: binding.last_seen_at,
+    boundAt: binding.bound_at,
+  }));
+}
+
+export async function bindDingTalkUser(bindingId, profileId, currentUserId) {
+  const { data, error } = await supabase
+    .from("dingtalk_user_bindings")
+    .update({
+      profile_id: profileId,
+      status: "active",
+      bound_at: new Date().toISOString(),
+      bound_by: currentUserId,
+    })
+    .eq("id", bindingId)
+    .select("id")
+    .single();
+  if (error) {
+    if (error.code === "23505") throw new Error("该销售系统账号已绑定其他钉钉用户，请先停用原绑定");
+    throw error;
+  }
+  return data;
+}
+
+export async function disableDingTalkBinding(bindingId, currentUserId) {
+  const { data, error } = await supabase
+    .from("dingtalk_user_bindings")
+    .update({
+      profile_id: null,
+      status: "disabled",
+      bound_at: null,
+      bound_by: currentUserId,
+    })
+    .eq("id", bindingId)
+    .select("id")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 export async function getFunctionErrorMessage(error) {
   if (error?.context) {
     try {

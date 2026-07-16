@@ -12,3 +12,4 @@ public/qa/
 .env
 .env.*
 !.env.example
+supabase/.temp/

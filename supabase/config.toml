@@ -35,3 +35,6 @@ verify_jwt = true
 
 [functions.sales-reports]
 verify_jwt = false
+
+[functions.dingtalk-agent]
+verify_jwt = false

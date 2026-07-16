@@ -1,0 +1,19 @@
+{
+  "name": "battlemap-dingtalk-connector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "军团作战助手钉钉 Stream 连接器",
+  "engines": {
+    "node": ">=20.6"
+  },
+  "scripts": {
+    "start": "node src/index.mjs",
+    "start:env": "node --env-file=.env src/index.mjs",
+    "test": "node --test",
+    "test:proactive": "node src/proactive-check.mjs"
+  },
+  "dependencies": {
+    "dingtalk-stream": "2.1.6-beta.1"
+  }
+}

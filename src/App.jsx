@@ -79,6 +79,7 @@ import {
   createBackendUser,
   importDailyReport,
   loadBackendData,
+  loadDingTalkBindings,
   loadDirectory,
   loadMarketingDataJob,
   loadDailyReportAnalysisJob,
@@ -89,6 +90,8 @@ import {
   importBackendProjects,
   applyCognitiveAction,
   saveBackendProject,
+  bindDingTalkUser,
+  disableDingTalkBinding,
   saveWeeklyUpdate,
   saveWorkspaceState,
   setBackendUserActive,
@@ -2339,9 +2342,23 @@ function TemporaryCredentials({ credentials, onClose, onToast }) {
   );
 }
 
-function SystemPage({ roleKey, onToast, initialUsers = [], onInviteUser, onToggleUser }) {
+function SystemPage({
+  roleKey,
+  currentUserId,
+  onToast,
+  initialUsers = [],
+  onInviteUser,
+  onToggleUser,
+  onLoadDingTalkBindings,
+  onBindDingTalkUser,
+  onDisableDingTalkBinding,
+}) {
   const [tab, setTab] = useState("users");
   const [users, setUsers] = useState(initialUsers);
+  const [dingtalkBindings, setDingtalkBindings] = useState([]);
+  const [dingtalkLoading, setDingtalkLoading] = useState(false);
+  const [dingtalkSelections, setDingtalkSelections] = useState({});
+  const [dingtalkSavingId, setDingtalkSavingId] = useState("");
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteSaving, setInviteSaving] = useState(false);
   const [temporaryCredentials, setTemporaryCredentials] = useState(null);
@@ -2369,7 +2386,56 @@ function SystemPage({ roleKey, onToast, initialUsers = [], onInviteUser, onToggl
       onToast(error.message || "用户状态更新失败", "error");
     }
   };
-  const tabs = [{ key: "users", label: "用户与团队", icon: TeamOutlined }, { key: "permissions", label: "角色权限", icon: SafetyCertificateOutlined }];
+  const refreshDingTalkBindings = useCallback(async () => {
+    if (roleKey !== "admin") return;
+    setDingtalkLoading(true);
+    try {
+      const bindings = await onLoadDingTalkBindings();
+      setDingtalkBindings(bindings);
+      setDingtalkSelections(Object.fromEntries(bindings.map((binding) => [binding.id, binding.profileId || ""])));
+    } catch (error) {
+      onToast(error.message || "钉钉身份加载失败", "error");
+    } finally {
+      setDingtalkLoading(false);
+    }
+  }, [onLoadDingTalkBindings, onToast, roleKey]);
+  useEffect(() => {
+    if (tab === "dingtalk") refreshDingTalkBindings();
+  }, [tab, refreshDingTalkBindings]);
+  const confirmDingTalkBinding = async (binding) => {
+    const profileId = dingtalkSelections[binding.id];
+    if (!profileId) {
+      onToast("请先选择要绑定的销售系统账号", "error");
+      return;
+    }
+    setDingtalkSavingId(binding.id);
+    try {
+      await onBindDingTalkUser(binding.id, profileId, currentUserId);
+      await refreshDingTalkBindings();
+      onToast("钉钉身份已绑定，用户可以重新向机器人提问");
+    } catch (error) {
+      onToast(error.message || "钉钉身份绑定失败", "error");
+    } finally {
+      setDingtalkSavingId("");
+    }
+  };
+  const disableDingTalkIdentity = async (binding) => {
+    setDingtalkSavingId(binding.id);
+    try {
+      await onDisableDingTalkBinding(binding.id, currentUserId);
+      await refreshDingTalkBindings();
+      onToast("钉钉身份已停用，将无法再读取销售数据");
+    } catch (error) {
+      onToast(error.message || "钉钉身份停用失败", "error");
+    } finally {
+      setDingtalkSavingId("");
+    }
+  };
+  const tabs = [
+    { key: "users", label: "用户与团队", icon: TeamOutlined },
+    { key: "dingtalk", label: "钉钉身份", icon: RobotOutlined },
+    { key: "permissions", label: "角色权限", icon: SafetyCertificateOutlined },
+  ];
   const permissionRows = [["作战地图", "本人", "全部", "全部"], ["客户与商机", "维护本人", "查看全部", "全部管理"], ["BI 分析", "本人", "全部", "全部"], ["数据导入", "本人数据", "可见数据", "全部管理"], ["系统管理", "无", "无", "全部管理"]];
   const exportPermissions = () => exportCsv("营销作战地图_权限矩阵.csv", permissionRows.map((row) => ({ module: row[0], sales: row[1], presales: row[2], admin: row[3] })), [{ key: "module", label: "功能模块" }, { key: "sales", label: "销售" }, { key: "presales", label: "售前" }, { key: "admin", label: "管理员" }]);
   if (roleKey !== "admin") return <div className="standard-page"><div className="permission-denied"><SafetyCertificateOutlined /><h1>仅管理员可访问系统管理</h1><p>当前账号为 {ROLE_PRESETS[roleKey].label}，如需管理用户请联系管理员。</p></div></div>;
@@ -2378,6 +2444,7 @@ function SystemPage({ roleKey, onToast, initialUsers = [], onInviteUser, onToggl
       <PageHeader eyebrow="SYSTEM ADMINISTRATION" title="系统管理" description="管理真实企业用户并核对数据库权限范围" />
       <div className="system-tabs">{tabs.map((item) => { const Icon = item.icon; return <button key={item.key} type="button" className={tab === item.key ? "is-active" : ""} onClick={() => setTab(item.key)}><Icon />{item.label}</button>; })}</div>
       {tab === "users" && <article className="settings-card"><header><div><p>USERS & TEAMS</p><h2>组织用户</h2></div><PrimaryButton onClick={() => setInviteOpen(true)}><PlusOutlined /> 添加用户</PrimaryButton></header><table className="data-table"><thead><tr><th>用户</th><th>角色</th><th>团队</th><th>数据范围</th><th>状态</th><th>操作</th></tr></thead><tbody>{users.map((user) => <tr key={user.id}><td><div className="user-cell"><span className="avatar avatar--small">{user.name.slice(0, 1)}</span><strong>{user.name}</strong></div></td><td>{user.role}</td><td>{user.team}</td><td>{user.role === "销售" ? "本人数据" : "全部数据"}</td><td><span className={`task-result ${user.status === "停用" ? "task-result--muted" : ""}`}>{user.status}</span></td><td><button type="button" className="link-button" onClick={() => toggleUser(user)}>{user.status === "启用" ? "停用" : "启用"}</button></td></tr>)}{!users.length && <tr><td colSpan="6"><div className="empty-state"><TeamOutlined /><strong>暂无企业用户</strong></div></td></tr>}</tbody></table></article>}
+      {tab === "dingtalk" && <article className="settings-card"><header><div><p>DINGTALK IDENTITY BINDING</p><h2>钉钉身份与数据权限</h2></div><GhostButton onClick={refreshDingTalkBindings} disabled={dingtalkLoading}><ReloadOutlined /> {dingtalkLoading ? "刷新中" : "刷新身份"}</GhostButton></header><div className="dingtalk-binding-intro"><SafetyCertificateOutlined /><p>用户首次向机器人发消息后会出现在这里。只有管理员确认绑定后，机器人才能按对应销售系统账号的数据权限回答；销售账号始终只能读取本人数据。</p></div><table className="data-table dingtalk-binding-table"><thead><tr><th>钉钉用户</th><th>钉钉识别码</th><th>绑定销售系统账号</th><th>状态</th><th>最近消息</th><th>操作</th></tr></thead><tbody>{dingtalkBindings.map((binding) => <tr key={binding.id}><td><div className="user-cell"><span className="avatar avatar--small">{binding.senderNick.slice(0, 1)}</span><strong>{binding.senderNick}</strong></div></td><td><code>{binding.staffId}</code></td><td><select value={dingtalkSelections[binding.id] ?? ""} onChange={(event) => setDingtalkSelections((current) => ({ ...current, [binding.id]: event.target.value }))}><option value="">选择销售系统账号</option>{users.filter((user) => user.status === "启用").map((user) => <option key={user.id} value={user.id}>{user.name} · {user.role}</option>)}</select></td><td><span className={`task-result ${binding.status === "pending" ? "task-result--warning" : binding.status === "disabled" ? "task-result--muted" : ""}`}>{binding.status === "active" ? "已绑定" : binding.status === "pending" ? "待确认" : "已停用"}</span></td><td>{formatDateTime(binding.lastSeenAt)}</td><td><div className="dingtalk-binding-actions"><button type="button" className="link-button" disabled={dingtalkSavingId === binding.id} onClick={() => confirmDingTalkBinding(binding)}>{dingtalkSavingId === binding.id ? "处理中" : binding.status === "active" ? "重新绑定" : "确认绑定"}</button>{binding.status === "active" && <button type="button" className="link-button link-button--danger" disabled={dingtalkSavingId === binding.id} onClick={() => disableDingTalkIdentity(binding)}>停用</button>}</div></td></tr>)}{!dingtalkBindings.length && <tr><td colSpan="6"><div className="empty-state"><RobotOutlined /><strong>{dingtalkLoading ? "正在读取钉钉身份" : "暂无待绑定身份"}</strong><span>请先让测试人员向“军团作战助手”发送一条消息。</span></div></td></tr>}</tbody></table></article>}
       {tab === "permissions" && <article className="settings-card"><header><div><p>ROLE-BASED ACCESS</p><h2>角色与数据库权限范围</h2></div><GhostButton onClick={exportPermissions}><DownloadOutlined /> 导出矩阵</GhostButton></header><table className="permission-table"><thead><tr><th>功能模块</th><th>销售</th><th>售前</th><th>管理员</th></tr></thead><tbody>{permissionRows.map((row) => <tr key={row[0]}>{row.map((cell, index) => <td key={`${row[0]}-${index}`}>{index === 0 ? <strong>{cell}</strong> : <span className={cell === "无" ? "permission-none" : "permission-yes"}>{cell !== "无" && <CheckOutlined />} {cell}</span>}</td>)}</tr>)}</tbody></table></article>}
       {inviteOpen && <Modal title="邀请企业用户" onClose={() => setInviteOpen(false)} width={520}><UserInviteForm onSubmit={inviteUser} onCancel={() => setInviteOpen(false)} saving={inviteSaving} /></Modal>}
       {temporaryCredentials && <Modal title="临时登录凭据" onClose={() => setTemporaryCredentials(null)} width={520}><TemporaryCredentials credentials={temporaryCredentials} onClose={() => setTemporaryCredentials(null)} onToast={onToast} /></Modal>}
@@ -2591,7 +2658,7 @@ export function App() {
       case "analysis": return <AnalysisPage projects={visibleProjects} roleKey={roleKey} reports={operations.salesReports} onAsk={askMarketingData} onLoadJob={loadMarketingDataJob} onLoadHistory={loadMarketingHistory} onSaveHistory={saveMarketingHistory} onClearHistory={clearMarketingHistory} onCreateReport={createSalesReport} onLoadReport={loadSalesReport} onRefreshReports={refreshBackendData} />;
       case "management": return <ManagementPage projects={visibleProjects} operations={operations} users={directoryUsers} roleKey={roleKey} onCreate={openCreate} onImportOpen={() => setImportOpen(true)} onRefresh={refreshBackendData} />;
       case "alerts": return <AlertsPage alerts={alerts} setAlerts={applyAlertUpdate} alertRules={operations.alertRules} roleKey={roleKey} projects={visibleProjects} onViewProject={setDetailProject} onUpdateRule={saveAlertRule} onRefresh={refreshBackendData} />;
-      case "system": return <SystemPage roleKey={roleKey} onToast={notify} initialUsers={directoryUsers} onInviteUser={inviteUser} onToggleUser={toggleUser} />;
+      case "system": return <SystemPage roleKey={roleKey} currentUserId={auth.session.user.id} onToast={notify} initialUsers={directoryUsers} onInviteUser={inviteUser} onToggleUser={toggleUser} onLoadDingTalkBindings={loadDingTalkBindings} onBindDingTalkUser={bindDingTalkUser} onDisableDingTalkBinding={disableDingTalkBinding} />;
       default: return null;
     }
   })();
