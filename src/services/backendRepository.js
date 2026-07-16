@@ -478,6 +478,14 @@ export async function listSalesReports(limit = 20) {
   return (data ?? []).map(mapSalesReport);
 }
 
+export function validateDailyImportResult(result, expectedCount) {
+  const importedCount = Number(result?.imported_count);
+  if (!Number.isInteger(importedCount) || importedCount !== expectedCount) {
+    throw new Error(`日报入库校验失败：请求写入 ${expectedCount} 条，数据库确认写入 ${Number.isFinite(importedCount) ? importedCount : 0} 条。草稿已保留，请重试或联系管理员。`);
+  }
+  return result;
+}
+
 export async function importDailyReport(rawText, defaultDate, entries) {
   const payload = entries.map((entry) => ({
     projectId: entry.projectId,
@@ -498,7 +506,7 @@ export async function importDailyReport(rawText, defaultDate, entries) {
     payload,
   });
   if (error) throw error;
-  return data?.[0] ?? { imported_count: payload.length };
+  return validateDailyImportResult(Array.isArray(data) ? data[0] : data, payload.length);
 }
 
 export async function saveBackendProject(form, existingProject, currentUserId) {

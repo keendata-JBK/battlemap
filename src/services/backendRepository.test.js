@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getFunctionErrorMessage, isProjectContextSchemaError, stripProjectContextFields } from "./backendRepository.js";
+import { getFunctionErrorMessage, isProjectContextSchemaError, stripProjectContextFields, validateDailyImportResult } from "./backendRepository.js";
 
 describe("getFunctionErrorMessage", () => {
   it("优先展示 Edge Function 返回的业务错误", async () => {
@@ -28,5 +28,15 @@ describe("getFunctionErrorMessage", () => {
       referral_unit: "牵线单位",
       amount: 100,
     })).toEqual({ name: "测试项目", amount: 100 });
+  });
+});
+
+describe("validateDailyImportResult", () => {
+  it("仅在数据库确认的写入条数与请求一致时通过", () => {
+    expect(validateDailyImportResult({ imported_count: 2 }, 2)).toEqual({ imported_count: 2 });
+  });
+
+  it("数据库返回零条时阻止前端误报成功", () => {
+    expect(() => validateDailyImportResult({ imported_count: 0 }, 1)).toThrow("请求写入 1 条，数据库确认写入 0 条");
   });
 });
