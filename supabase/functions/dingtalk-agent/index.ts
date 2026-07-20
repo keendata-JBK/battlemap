@@ -8,9 +8,17 @@ import {
   normalizeWriteProposal,
   parseModelJson,
 } from "./write-proposal.mjs";
+import {
+  addDays,
+  buildWorkAnalysisFallback,
+  chinaClockParts,
+  dueReportTypes,
+  isoWeekStart,
+} from "./work-analysis.mjs";
 
 const corsHeaders = {
-  "Access-Control-Allow-Headers": "content-type, x-dingtalk-connector-token",
+  "Access-Control-Allow-Headers":
+    "content-type, x-dingtalk-connector-token, x-scheduler-token",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Origin": Deno.env.get("ALLOWED_ORIGIN") ?? "*",
 };
@@ -468,6 +476,58 @@ async function loadOrCreateBinding(
   return data;
 }
 
+async function claimBindingIntent(
+  adminClient: AdminClient,
+  binding: Record<string, any>,
+  senderNick: string,
+) {
+  if (
+    binding.status === "active" ||
+    binding.profile_id ||
+    !senderNick
+  ) {
+    return binding;
+  }
+  const now = new Date().toISOString();
+  const { data: intents, error: intentError } = await adminClient
+    .from("dingtalk_binding_intents")
+    .select("id,profile_id,expected_sender_nick,created_by")
+    .eq("status", "pending")
+    .eq("expected_sender_nick", senderNick)
+    .gt("expires_at", now)
+    .limit(2);
+  if (intentError) throw intentError;
+  if (intents?.length !== 1) return binding;
+  const intent = intents[0];
+  const { data: activated, error: bindingError } = await adminClient
+    .from("dingtalk_user_bindings")
+    .update({
+      profile_id: intent.profile_id,
+      status: "active",
+      bound_at: now,
+      bound_by: intent.created_by,
+      last_seen_at: now,
+    })
+    .eq("id", binding.id)
+    .eq("status", "pending")
+    .is("profile_id", null)
+    .select("id,staff_id,profile_id,status,sender_nick,robot_code")
+    .maybeSingle();
+  if (bindingError) throw bindingError;
+  if (!activated) return binding;
+  const { error: claimError } = await adminClient
+    .from("dingtalk_binding_intents")
+    .update({
+      status: "claimed",
+      claimed_staff_id: binding.staff_id,
+      claimed_at: now,
+    })
+    .eq("id", intent.id)
+    .eq("status", "pending");
+  if (claimError) throw claimError;
+  return activated;
+}
+
 async function saveConversation(
   adminClient: AdminClient,
   conversationId: string,
@@ -636,12 +696,13 @@ async function handleMessage(
   if (logError) throw logError;
 
   try {
-    const binding = await loadOrCreateBinding(
+    let binding = await loadOrCreateBinding(
       adminClient,
       staffId,
       senderNick,
       robotCode,
     );
+    binding = await claimBindingIntent(adminClient, binding, senderNick);
     if (binding.status !== "active" || !binding.profile_id) {
       const answer = [
         `你好，${
@@ -949,6 +1010,478 @@ async function prepareDailyDigests(adminClient: AdminClient) {
   return rows.length;
 }
 
+function chinaMidnightIso(dateText: string) {
+  return new Date(`${dateText}T00:00:00+08:00`).toISOString();
+}
+
+async function loadWorkAnalysisContext(
+  adminClient: AdminClient,
+  reportType: "daily" | "weekly",
+) {
+  const clock = chinaClockParts();
+  const weekStart = isoWeekStart(clock.date, clock.isoWeekday);
+  const queryStart = reportType === "weekly"
+    ? addDays(weekStart, -7)
+    : addDays(clock.date, -6);
+  const queryEndExclusive = addDays(clock.date, 1);
+  const [
+    dailyResult,
+    activityResult,
+    projectResult,
+    profileResult,
+    weeklyResult,
+  ] = await Promise.all([
+    adminClient.from("daily_report_entries").select(
+      "project_id,salesperson_id,report_date,activity_type,content,customer_contact",
+    ).gte("report_date", queryStart).lte("report_date", clock.date)
+      .order("report_date", { ascending: false }).limit(500),
+    adminClient.from("project_activities").select(
+      "project_id,activity_type,content,occurred_at,created_by,next_action,next_action_date,daily_report_entry_id",
+    ).gte("occurred_at", chinaMidnightIso(queryStart))
+      .lt("occurred_at", chinaMidnightIso(queryEndExclusive))
+      .order("occurred_at", { ascending: false }).limit(500),
+    adminClient.from("project_dashboard").select(
+      "id,name,owner_id,owner_name,stage,health,priority,next_action,next_action_date,expected_close,risk,amount,contract_signed_amount,probability,updated_at",
+    ).limit(5000),
+    adminClient.from("profiles").select("id,display_name,role,active")
+      .eq("active", true).order("display_name"),
+    adminClient.from("weekly_updates").select(
+      "owner_id,week_start,status,last_week_summary,this_week_goal,risks,support_needed,actions,submitted_at",
+    ).gte("week_start", weekStart).order("week_start", { ascending: false })
+      .limit(200),
+  ]);
+  const readError = dailyResult.error ?? activityResult.error ??
+    projectResult.error ?? profileResult.error ?? weeklyResult.error;
+  if (readError) {
+    throw new Error(`工作分析数据读取失败：${readError.message}`);
+  }
+  const projects = projectResult.data ?? [];
+  const projectById = new Map(
+    projects.map((project: Record<string, any>) => [project.id, project]),
+  );
+  const dailyEntries = (dailyResult.data ?? []).map((
+    entry: Record<string, any>,
+  ) => ({
+    salesperson_id: entry.salesperson_id,
+    project_id: entry.project_id,
+    work_date: entry.report_date,
+    activity_type: entry.activity_type,
+    content: safeText(entry.content, 600),
+    customer_contact: safeText(entry.customer_contact, 120) || null,
+    source: "daily_report",
+  }));
+  const activityEntries = (activityResult.data ?? [])
+    .filter((activity: Record<string, any>) =>
+      !activity.daily_report_entry_id
+    )
+    .map((activity: Record<string, any>) => ({
+      salesperson_id: projectById.get(activity.project_id)?.owner_id ??
+        activity.created_by,
+      project_id: activity.project_id,
+      work_date: new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Shanghai",
+      }).format(new Date(activity.occurred_at)),
+      activity_type: activity.activity_type,
+      content: safeText(activity.content, 600),
+      customer_contact: null,
+      source: "project_activity",
+    }));
+  const allEntries = [...dailyEntries, ...activityEntries].sort((left, right) =>
+    String(right.work_date).localeCompare(String(left.work_date))
+  );
+  const currentPeriodEntries = reportType === "weekly"
+    ? allEntries.filter((entry) => entry.work_date >= weekStart)
+    : allEntries.filter((entry) => entry.work_date === clock.date);
+  const analysisEntries = currentPeriodEntries.length
+    ? currentPeriodEntries
+    : allEntries;
+  const touchedProjectIds = new Set(
+    analysisEntries.map((entry) => entry.project_id),
+  );
+  const focusProjects = projects
+    .filter((project: Record<string, any>) =>
+      touchedProjectIds.has(project.id)
+    )
+    .slice(0, 120);
+  const usedRecentWork = !currentPeriodEntries.length && allEntries.length > 0;
+  return {
+    clock,
+    weekStart,
+    periodLabel: reportType === "weekly"
+      ? `${usedRecentWork ? queryStart : weekStart}—${clock.date}`
+      : clock.date,
+    analysisEntries: analysisEntries.slice(0, 150),
+    currentPeriodEntryCount: currentPeriodEntries.length,
+    usedRecentWork,
+    projects: focusProjects,
+    salespeople: (profileResult.data ?? []).filter((
+      profile: Record<string, any>,
+    ) => profile.role === "sales"),
+    weeklyUpdates: weeklyResult.data ?? [],
+  };
+}
+
+async function generateWorkAnalysis(
+  adminClient: AdminClient,
+  profile: { id: string; display_name: string; role: string },
+  reportType: "daily" | "weekly",
+) {
+  const context = await loadWorkAnalysisContext(adminClient, reportType);
+  const fallback = buildWorkAnalysisFallback({
+    displayName: profile.display_name,
+    reportType,
+    periodLabel: context.periodLabel,
+    entries: context.analysisEntries,
+    projects: context.projects,
+    salespeople: context.salespeople,
+  });
+  const gatewayKey = Deno.env.get("KEENROUTER_API_KEY");
+  if (!gatewayKey) return { ...fallback, context };
+  const gatewayBaseUrl = (Deno.env.get("KEENROUTER_BASE_URL") ??
+    "http://router.keendata.net:5343/v1").replace(/\/$/, "");
+  const reportName = reportType === "weekly" ? "领导工作周报" : "领导工作日报";
+  try {
+    const response = await fetchWithTimeout(
+      `${gatewayBaseUrl}/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${gatewayKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          store: false,
+          reasoning_effort: "low",
+          max_completion_tokens: 2200,
+          response_format: { type: "json_object" },
+          messages: [
+            {
+              role: "system",
+              content: [
+                `你是科杰科技销售管理 Agent，现在为公司领导生成${reportName}。`,
+                "核心任务是分析销售团队做了什么、工作产生了什么推进、管理者下一步应该推动什么。",
+                "只依据输入的真实工作记录和项目状态，不虚构客户反馈、金额、日期或结论。",
+                "不要讨论数据缺陷、数据完整性、字段缺失、录入质量、未填报或系统问题。",
+                "如果当期动作较少，直接从近期真实动作中判断工作趋势和下一步，不解释为什么记录少，也不要写“未看到、没有记录、无法判断、暂不能判断”。",
+                "不得输出补字段、补金额、补日期、补录数据之类的行动。",
+                "把事实、判断、管理动作串联起来，突出具体销售、具体项目和可执行动作。",
+                reportType === "weekly"
+                  ? "周报包含：本周管理结论、销售工作分析、有效推进与不足、下周管理动作。"
+                  : "日报包含：管理结论、工作推进分析、关键判断、明日管理动作。",
+                "适合钉钉 Markdown 阅读，不使用表格，控制在900个汉字以内。",
+                '只返回 JSON：{"title":"简短标题","content":"完整 Markdown 正文"}。',
+              ].join("\n"),
+            },
+            {
+              role: "user",
+              content: JSON.stringify({
+                接收领导: profile.display_name,
+                报告类型: reportName,
+                报告周期: context.periodLabel,
+                当期工作动作数: context.currentPeriodEntryCount,
+                分析使用近期工作趋势: context.usedRecentWork,
+                工作动作: context.analysisEntries,
+                相关项目: context.projects,
+                销售人员: context.salespeople,
+                本周更新: context.weeklyUpdates,
+              }),
+            },
+          ],
+        }),
+      },
+      50000,
+    );
+    if (!response.ok) return { ...fallback, context };
+    const payload = await response.json();
+    const parsed = parseModelJson(
+      payload?.choices?.[0]?.message?.content ?? payload?.output_text,
+    );
+    const title = safeText(parsed?.title, 120);
+    const content = safeText(parsed?.content, 8000);
+    if (
+      !title ||
+      !content ||
+      /(数据缺失|数据不完整|缺数据|字段缺失|未录入|未填报|录入质量|补录|补充字段|未看到|没有可归因|没有可确认|无法判断|暂不能|未形成可确认)/.test(
+        content,
+      )
+    ) {
+      return { ...fallback, context };
+    }
+    return { title, content, context };
+  } catch {
+    return { ...fallback, context };
+  }
+}
+
+function scheduledDedupeKey(
+  reportType: "daily" | "weekly",
+  profileId: string,
+  clock: ReturnType<typeof chinaClockParts>,
+) {
+  const period = reportType === "weekly"
+    ? isoWeekStart(clock.date, clock.isoWeekday)
+    : clock.date;
+  return `work-${reportType}:${period}:${profileId}`;
+}
+
+async function prepareScheduledWorkReports(adminClient: AdminClient) {
+  const { data: preferences, error: preferenceError } = await adminClient
+    .from("dingtalk_notification_preferences")
+    .select(
+      "profile_id,daily_enabled,daily_time,weekly_enabled,weekly_day,weekly_time,content_mode,delivery_mode",
+    )
+    .eq("content_mode", "work_analysis")
+    .eq("delivery_mode", "cloud_direct");
+  if (preferenceError) throw preferenceError;
+  if (!preferences?.length) return 0;
+  const profileIds = preferences.map((preference) => preference.profile_id);
+  const [{ data: profiles, error: profileError }, {
+    data: bindings,
+    error: bindingError,
+  }] = await Promise.all([
+    adminClient.from("profiles").select("id,display_name,role,active")
+      .in("id", profileIds).eq("active", true),
+    adminClient.from("dingtalk_user_bindings")
+      .select("profile_id,staff_id,robot_code,status")
+      .in("profile_id", profileIds).eq("status", "active")
+      .not("robot_code", "is", null),
+  ]);
+  const readError = profileError ?? bindingError;
+  if (readError) throw readError;
+  const clock = chinaClockParts();
+  const candidates = preferences.flatMap((preference) => {
+    const profile = profiles?.find((item) =>
+      item.id === preference.profile_id
+    );
+    const binding = bindings?.find((item) =>
+      item.profile_id === preference.profile_id
+    );
+    if (!profile || !binding) return [];
+    return dueReportTypes(preference, clock).map((reportType) => ({
+      profile,
+      binding,
+      reportType: reportType as "daily" | "weekly",
+      dedupeKey: scheduledDedupeKey(
+        reportType as "daily" | "weekly",
+        profile.id,
+        clock,
+      ),
+    }));
+  });
+  if (!candidates.length) return 0;
+  const { data: existing, error: existingError } = await adminClient
+    .from("dingtalk_notification_outbox")
+    .select("dedupe_key")
+    .in("dedupe_key", candidates.map((candidate) => candidate.dedupeKey));
+  if (existingError) throw existingError;
+  const existingKeys = new Set(
+    (existing ?? []).map((item) => item.dedupe_key),
+  );
+  let prepared = 0;
+  for (const candidate of candidates) {
+    if (existingKeys.has(candidate.dedupeKey)) continue;
+    const report = await generateWorkAnalysis(
+      adminClient,
+      candidate.profile,
+      candidate.reportType,
+    );
+    const { error } = await adminClient
+      .from("dingtalk_notification_outbox")
+      .insert({
+        profile_id: candidate.profile.id,
+        staff_id: candidate.binding.staff_id,
+        robot_code: candidate.binding.robot_code,
+        notification_type: candidate.reportType === "weekly"
+          ? "weekly_work_analysis"
+          : "daily_work_analysis",
+        title: report.title,
+        content: report.content,
+        dedupe_key: candidate.dedupeKey,
+        status: "pending",
+      });
+    if (error?.code !== "23505") {
+      if (error) throw error;
+      prepared += 1;
+    }
+  }
+  return prepared;
+}
+
+async function getDingTalkAccessToken() {
+  const appKey = Deno.env.get("DINGTALK_CLIENT_ID") ?? "";
+  const appSecret = Deno.env.get("DINGTALK_CLIENT_SECRET") ?? "";
+  if (!appKey || !appSecret) {
+    throw new Error("钉钉云端直发凭证未配置");
+  }
+  const response = await fetchWithTimeout(
+    "https://api.dingtalk.com/v1.0/oauth2/accessToken",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ appKey, appSecret }),
+    },
+    15000,
+  );
+  const payload = await response.json();
+  if (!response.ok || !payload?.accessToken) {
+    throw new Error(
+      `钉钉访问令牌获取失败：${
+        safeText(payload?.message ?? payload?.code, 300) || response.status
+      }`,
+    );
+  }
+  return payload.accessToken as string;
+}
+
+async function sendScheduledDingTalkNotification(
+  accessToken: string,
+  notification: Record<string, any>,
+) {
+  const response = await fetchWithTimeout(
+    "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-acs-dingtalk-access-token": accessToken,
+      },
+      body: JSON.stringify({
+        robotCode: notification.robot_code,
+        userIds: [notification.staff_id],
+        msgKey: "sampleMarkdown",
+        msgParam: JSON.stringify({
+          title: notification.title,
+          text: notification.content,
+        }),
+      }),
+    },
+    15000,
+  );
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(
+      `钉钉主动通知失败：${
+        safeText(payload?.message ?? payload?.code, 300) || response.status
+      }`,
+    );
+  }
+  if (array(payload?.invalidStaffIdList).length) {
+    throw new Error("钉钉主动通知失败：staffId 无效");
+  }
+  if (array(payload?.flowControlledStaffIdList).length) {
+    throw new Error("钉钉主动通知被限流");
+  }
+}
+
+async function dispatchScheduledWorkReports(adminClient: AdminClient) {
+  const prepared = await prepareScheduledWorkReports(adminClient);
+  const scheduledTypes = [
+    "daily_work_analysis",
+    "weekly_work_analysis",
+  ];
+  const staleThreshold = new Date(Date.now() - 10 * 60000).toISOString();
+  await adminClient
+    .from("dingtalk_notification_outbox")
+    .update({ status: "pending", claimed_at: null })
+    .in("notification_type", scheduledTypes)
+    .eq("status", "sending")
+    .lt("claimed_at", staleThreshold)
+    .lt("attempt_count", 3);
+  const { data: pending, error: pendingError } = await adminClient
+    .from("dingtalk_notification_outbox")
+    .select(
+      "id,staff_id,robot_code,notification_type,title,content,attempt_count",
+    )
+    .in("notification_type", scheduledTypes)
+    .eq("status", "pending")
+    .lte("available_at", new Date().toISOString())
+    .order("created_at", { ascending: true })
+    .limit(20);
+  if (pendingError) throw pendingError;
+  if (!pending?.length) return { prepared, sent: 0, failed: 0 };
+  const { data: claimed, error: claimError } = await adminClient
+    .from("dingtalk_notification_outbox")
+    .update({ status: "sending", claimed_at: new Date().toISOString() })
+    .in("id", pending.map((item) => item.id))
+    .eq("status", "pending")
+    .select(
+      "id,staff_id,robot_code,notification_type,title,content,attempt_count",
+    );
+  if (claimError) throw claimError;
+  if (!claimed?.length) return { prepared, sent: 0, failed: 0 };
+  const accessToken = await getDingTalkAccessToken();
+  let sent = 0;
+  let failed = 0;
+  for (const notification of claimed) {
+    try {
+      await sendScheduledDingTalkNotification(accessToken, notification);
+      const { error } = await adminClient
+        .from("dingtalk_notification_outbox")
+        .update({
+          status: "sent",
+          attempt_count: Number(notification.attempt_count ?? 0) + 1,
+          sent_at: new Date().toISOString(),
+          claimed_at: null,
+          last_error: null,
+        })
+        .eq("id", notification.id);
+      if (error) throw error;
+      sent += 1;
+    } catch (error) {
+      const attemptCount = Number(notification.attempt_count ?? 0) + 1;
+      const retryable = attemptCount < 3;
+      await adminClient
+        .from("dingtalk_notification_outbox")
+        .update({
+          status: retryable ? "pending" : "failed",
+          attempt_count: attemptCount,
+          claimed_at: null,
+          available_at: retryable
+            ? new Date(Date.now() + attemptCount * 60000).toISOString()
+            : new Date().toISOString(),
+          last_error: safeText(
+            error instanceof Error ? error.message : "钉钉发送失败",
+            1000,
+          ),
+        })
+        .eq("id", notification.id);
+      failed += 1;
+    }
+  }
+  return { prepared, sent, failed };
+}
+
+async function previewScheduledWorkReport(
+  adminClient: AdminClient,
+  body: Record<string, unknown>,
+) {
+  const profileId = safeText(body.profileId, 128);
+  const reportType = body.reportType === "weekly" ? "weekly" : "daily";
+  if (!profileId) return jsonResponse({ error: "缺少 profileId" }, 400);
+  const { data: profile, error } = await adminClient
+    .from("profiles")
+    .select("id,display_name,role,active")
+    .eq("id", profileId)
+    .eq("active", true)
+    .single();
+  if (error) throw error;
+  const report = await generateWorkAnalysis(
+    adminClient,
+    profile,
+    reportType,
+  );
+  return jsonResponse({
+    title: report.title,
+    content: report.content,
+    reportType,
+    periodLabel: report.context.periodLabel,
+    analyzedActions: report.context.analysisEntries.length,
+    currentPeriodActions: report.context.currentPeriodEntryCount,
+    usedRecentWork: report.context.usedRecentWork,
+  });
+}
+
 async function pullNotifications(
   adminClient: AdminClient,
   body: Record<string, unknown>,
@@ -970,6 +1503,11 @@ async function pullNotifications(
       "id,profile_id,staff_id,robot_code,notification_type,title,content,attempt_count",
     )
     .eq("status", "pending")
+    .not(
+      "notification_type",
+      "in",
+      "(daily_work_analysis,weekly_work_analysis)",
+    )
     .lte("available_at", new Date().toISOString())
     .order("created_at", { ascending: true })
     .limit(20);
@@ -1034,14 +1572,23 @@ Deno.serve(async (request) => {
   if (request.method !== "POST") {
     return jsonResponse({ error: "Method not allowed" }, 405);
   }
-  const expectedToken = Deno.env.get("DINGTALK_CONNECTOR_TOKEN") ?? "";
-  const actualToken = request.headers.get("x-dingtalk-connector-token") ?? "";
-  if (!expectedToken || !(await secureEquals(actualToken, expectedToken))) {
-    return jsonResponse({ error: "Invalid connector token" }, 401);
-  }
   try {
     const body = await request.json() as Record<string, unknown>;
     const action = safeText(body.action, 40) || "message";
+    const schedulerAction = [
+      "scheduled_reports",
+      "preview_scheduled_report",
+    ].includes(action);
+    const expectedToken = schedulerAction
+      ? Deno.env.get("DINGTALK_REPORT_SCHEDULER_TOKEN") ??
+        Deno.env.get("SALES_REPORT_SCHEDULER_TOKEN") ?? ""
+      : Deno.env.get("DINGTALK_CONNECTOR_TOKEN") ?? "";
+    const actualToken = schedulerAction
+      ? request.headers.get("x-scheduler-token") ?? ""
+      : request.headers.get("x-dingtalk-connector-token") ?? "";
+    if (!expectedToken || !(await secureEquals(actualToken, expectedToken))) {
+      return jsonResponse({ error: "Invalid service token" }, 401);
+    }
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     if (!supabaseUrl || !serviceRoleKey) {
@@ -1059,6 +1606,12 @@ Deno.serve(async (request) => {
     }
     if (action === "ack_notification") {
       return await acknowledgeNotification(adminClient, body);
+    }
+    if (action === "scheduled_reports") {
+      return jsonResponse(await dispatchScheduledWorkReports(adminClient));
+    }
+    if (action === "preview_scheduled_report") {
+      return await previewScheduledWorkReport(adminClient, body);
     }
     return jsonResponse({ error: "Unsupported action" }, 400);
   } catch (error) {

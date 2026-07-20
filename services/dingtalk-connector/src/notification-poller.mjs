@@ -24,7 +24,7 @@ export function startNotificationPoller({
     let failed = 0;
     try {
       const payload = await agentClient.pullNotifications({
-        prepare: true,
+        prepare: false,
         staffAllowlist: allowAll ? [] : staffAllowlist,
       });
       for (const notification of payload.notifications ?? []) {

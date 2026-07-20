@@ -19,6 +19,14 @@
 `DINGTALK_NOTIFICATIONS_ENABLED=true`，并填写
 `DINGTALK_NOTIFICATION_STAFF_ALLOWLIST` 后才会发送。
 
+领导日报和周报采用 Supabase 云端定时直发，不经过本机通知轮询，因此电脑合盖、
+关机或 Stream 连接器离线不会影响已经绑定领导的定时报告。Stream 连接器仍用于
+接收领导和销售主动发给机器人的对话。
+
+管理员可以预先创建一次性身份认领。被预授权人员下一次向机器人发送文本消息时，
+服务端会使用钉钉消息中的真实 `staffId` 完成绑定；昵称不匹配、多人匹配或授权过期
+都不会自动绑定。
+
 健康检查地址：`http://127.0.0.1:8787/health`
 
 ## macOS 登录后自动启动
