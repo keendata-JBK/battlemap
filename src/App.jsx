@@ -102,6 +102,8 @@ import {
 } from "./services/backendRepository.js";
 import logo from "./assets/keendata-logo.png";
 
+const AI_MODEL_LABEL = "GPT-5.6-sol";
+
 const NAV_ITEMS = [
   { key: "aiActions", label: "AI 认知行动", icon: RobotOutlined },
   { key: "map", label: "作战地图", icon: EnvironmentOutlined },
@@ -1723,7 +1725,7 @@ function DailyReportImportView({ projects, users, importHistory = [], onAnalyze,
           setAnalyzing(false);
           return;
         }
-        setDraftStatus(job.status === "processing" ? "GPT-5.5 正在后台识别日报，离开页面不会丢失" : "日报识别任务已进入队列");
+        setDraftStatus(job.status === "processing" ? `${AI_MODEL_LABEL} 正在后台识别日报，离开页面不会丢失` : "日报识别任务已进入队列");
         timer = window.setTimeout(poll, 2500);
       } catch {
         if (!cancelled) timer = window.setTimeout(poll, 4000);
@@ -2014,7 +2016,7 @@ function SmartQueryPanel({ onAsk, onLoadJob, onLoadHistory, onSaveHistory, onCle
           setActiveJobId(null);
           return;
         }
-        setMessages((current) => current.map((item) => item.jobId === activeJobId ? { ...item, content: job.status === "processing" ? "GPT-5.5 正在后台分析营销数据，可以离开页面，完成后会保存到当前账号。" : "任务已进入队列，正在等待后台执行。", meta: job.status === "processing" ? "后台分析中" : "等待执行", status: job.status } : item));
+        setMessages((current) => current.map((item) => item.jobId === activeJobId ? { ...item, content: job.status === "processing" ? `${AI_MODEL_LABEL} 正在后台分析营销数据，可以离开页面，完成后会保存到当前账号。` : "任务已进入队列，正在等待后台执行。", meta: job.status === "processing" ? "后台分析中" : "等待执行", status: job.status } : item));
         timer = window.setTimeout(poll, 2500);
       } catch {
         if (!cancelled) timer = window.setTimeout(poll, 4000);
@@ -2096,7 +2098,7 @@ function SmartQueryPanel({ onAsk, onLoadJob, onLoadHistory, onSaveHistory, onCle
   return (
     <article className="smart-query-card">
       <header>
-        <div className="smart-query-title"><i><RobotOutlined /></i><div><p>KEENCLAW SALES INTELLIGENCE</p><h2>销售 Agent <small>By Keenclaw</small></h2><span>GPT-5.5 异步分析当前权限下的营销地图数据</span></div></div>
+        <div className="smart-query-title"><i><RobotOutlined /></i><div><p>KEENCLAW SALES INTELLIGENCE</p><h2>销售 Agent <small>By Keenclaw</small></h2><span>{AI_MODEL_LABEL} 异步分析当前权限下的营销地图数据</span></div></div>
         <div className="smart-query-account"><div className="smart-query-scope"><SafetyCertificateOutlined /><span><strong>{roleKey === "sales" ? "本人数据" : "全部可见数据"}</strong><small>{projectCount} 个项目 · {historyStatus}</small></span></div><button type="button" disabled={asking || messages.length <= 1} onClick={clearHistory}>清空对话</button></div>
       </header>
       <div className="smart-query-layout">

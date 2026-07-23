@@ -1,5 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+const AI_MODEL = "gpt-5.6-sol";
+
 const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -79,7 +81,7 @@ async function processJob(
       method: "POST",
       headers: { Authorization: `Bearer ${gatewayKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "gpt-5.5",
+        model: AI_MODEL,
         store: false,
         reasoning_effort: "low",
         max_completion_tokens: 8000,
@@ -127,7 +129,7 @@ async function processJob(
     const result = {
       entries,
       warnings: Array.isArray(parsed.warnings) ? parsed.warnings.map((item: unknown) => String(item)).slice(0, 20) : [],
-      model: "gpt-5.5",
+      model: AI_MODEL,
       defaultDate,
     };
     const { error: updateError } = await adminClient.from("daily_report_analysis_jobs").update({
@@ -175,6 +177,7 @@ Deno.serve(async (request) => {
     requester_id: user.id,
     raw_text: rawText,
     default_date: defaultDate,
+    model: AI_MODEL,
   }).select("id,status,created_at").single();
   if (insertError || !job) return jsonResponse({ error: `日报异步任务创建失败：${insertError?.message ?? "未知错误"}` }, 500);
 

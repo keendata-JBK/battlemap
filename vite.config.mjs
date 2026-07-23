@@ -14,7 +14,7 @@ export default defineConfig({
   },
   plugins: [react()],
   test: {
-    exclude: ["services/dingtalk-connector/**", "node_modules/**", "docs/**"],
+    exclude: ["services/dingtalk-connector/**", "supabase/functions/**", "node_modules/**", "docs/**"],
   },
   build: {
     outDir: "docs",

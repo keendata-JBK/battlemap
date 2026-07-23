@@ -1,5 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+const AI_MODEL = "gpt-5.6-sol";
+
 const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-scheduler-token",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -165,7 +167,7 @@ async function processReport(
         method: "POST",
         headers: { Authorization: `Bearer ${gatewayKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "gpt-5.5",
+          model: AI_MODEL,
           store: false,
           reasoning_effort: "low",
           max_completion_tokens: 2500,
@@ -197,6 +199,7 @@ async function processReport(
       content,
       markdown,
       error_message: null,
+      model: AI_MODEL,
       data_scope: dataScope,
       project_count: projects.length,
       finished_at: new Date().toISOString(),
@@ -259,6 +262,7 @@ Deno.serve(async (request) => {
     content: null,
     markdown: null,
     error_message: null,
+    model: AI_MODEL,
     generated_automatically: scheduled,
     started_at: null,
     finished_at: null,

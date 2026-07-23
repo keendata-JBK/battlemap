@@ -16,6 +16,8 @@ import {
   isoWeekStart,
 } from "./work-analysis.mjs";
 
+const AI_MODEL = "gpt-5.6-sol";
+
 const corsHeaders = {
   "Access-Control-Allow-Headers":
     "content-type, x-dingtalk-connector-token, x-scheduler-token",
@@ -367,7 +369,7 @@ async function askSalesAgent(
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "gpt-5.5",
+          model: AI_MODEL,
           store: false,
           reasoning_effort: "low",
           max_completion_tokens: 6000,
@@ -599,7 +601,7 @@ async function saveWriteProposal(
       summary: input.summary,
       payload: input.payload,
       status: "pending",
-      model: "gpt-5.5",
+      model: AI_MODEL,
     })
     .select("id,payload,summary,status,expires_at,created_at")
     .single();
@@ -1150,7 +1152,7 @@ async function generateWorkAnalysis(
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "gpt-5.5",
+          model: AI_MODEL,
           store: false,
           reasoning_effort: "low",
           max_completion_tokens: 2200,

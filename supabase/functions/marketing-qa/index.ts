@@ -1,5 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+const AI_MODEL = "gpt-5.6-sol";
+
 const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -92,7 +94,7 @@ async function processJob(
       method: "POST",
       headers: { Authorization: `Bearer ${gatewayKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "gpt-5.5",
+        model: AI_MODEL,
         store: false,
         reasoning_effort: "low",
         max_completion_tokens: 4000,
@@ -122,7 +124,7 @@ async function processJob(
       status: "completed",
       answer,
       error_message: null,
-      model: "gpt-5.5",
+      model: AI_MODEL,
       data_scope: dataScope,
       project_count: projects.length,
       finished_at: new Date().toISOString(),
@@ -132,7 +134,7 @@ async function processJob(
     const timedOut = error instanceof DOMException && error.name === "AbortError";
     await adminClient.from("marketing_qa_jobs").update({
       status: "failed",
-      error_message: timedOut ? "GPT-5.5 分析超过 140 秒，请缩小问题范围后重试。" : error instanceof Error ? error.message.slice(0, 1000) : "销售 Agent 任务执行失败",
+      error_message: timedOut ? "GPT-5.6-sol 分析超过 140 秒，请缩小问题范围后重试。" : error instanceof Error ? error.message.slice(0, 1000) : "销售 Agent 任务执行失败",
       finished_at: new Date().toISOString(),
     }).eq("id", jobId);
   }
@@ -164,6 +166,7 @@ Deno.serve(async (request) => {
     requester_id: user.id,
     question,
     history,
+    model: AI_MODEL,
   }).select("id,status,created_at").single();
   if (insertError || !job) return jsonResponse({ error: `异步任务创建失败：${insertError?.message ?? "未知错误"}` }, 500);
 
